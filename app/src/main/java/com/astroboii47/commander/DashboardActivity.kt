@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -151,6 +152,28 @@ private fun DashboardScreen() {
     var psCourses by remember { mutableStateOf(listOf<PsCourse>()) }
     var psRefreshedAt by remember { mutableStateOf(PowerSchoolStore.refreshedAt(context)) }
 
+    // App updates (GitHub pre-releases).
+    var updateState by remember { mutableStateOf<UpdateManager.CheckResult?>(null) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var dlProgress by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+    var downloading by remember { mutableStateOf(false) }
+
+    fun checkForUpdates(silent: Boolean = false) {
+        if (checkingUpdate) return
+        scope.launch {
+            checkingUpdate = true
+            try {
+                val result = withContext(Dispatchers.IO) { UpdateManager.check(context) }
+                updateState = result
+                if (!silent && result is UpdateManager.CheckResult.Failed) {
+                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                checkingUpdate = false
+            }
+        }
+    }
+
     fun reloadFeeds() {
         feeds.clear()
         feeds.addAll(ICalStore.list(context))
@@ -175,6 +198,7 @@ private fun DashboardScreen() {
         if (PowerSchoolStore.username(context) != null && PowerSchoolStore.loadCourses(context).isNotEmpty()) {
             reloadCachedPs()
         }
+        checkForUpdates(silent = true)
     }
 
     fun doPsRefresh(account: String?, password: String?) {
@@ -290,6 +314,50 @@ private fun DashboardScreen() {
                     Icon(Icons.Outlined.Settings, "Houston settings", tint = MaterialTheme.colorScheme.primary)
                 }
             }
+            UpdateCard(
+                state = updateState,
+                checking = checkingUpdate,
+                downloading = downloading,
+                progress = dlProgress,
+                onCheck = { checkForUpdates(silent = false) },
+                onDownload = { info ->
+                    if (downloading) return@UpdateCard
+                    scope.launch {
+                        downloading = true
+                        dlProgress = Pair(0L, -1L)
+                        try {
+                            val apk = withContext(Dispatchers.IO) {
+                                UpdateManager.download(context, info) { done, total ->
+                                    dlProgress = Pair(done, total)
+                                }
+                            }
+                            updateState = UpdateManager.CheckResult.Available(info, apk)
+                            if (!UpdateManager.canInstall(context)) {
+                                Toast.makeText(
+                                    context,
+                                    "Allow Houston to install apps, then tap Install.",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                UpdateManager.openUnknownSourcesSettings(context)
+                            }
+                        } catch (e: Exception) {
+                            Toast.makeText(
+                                context,
+                                (e.message ?: "Download failed.").take(200),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        } finally {
+                            downloading = false
+                            dlProgress = null
+                        }
+                    }
+                },
+                onInstall = { apk ->
+                    runCatching { UpdateManager.install(context, apk) }.onFailure {
+                        Toast.makeText(context, "Couldn't open installer: ${it.message?.take(120)}", Toast.LENGTH_LONG).show()
+                    }
+                },
+            )
             Spacer(Modifier.height(16.dp))
 
             // Calendar
@@ -436,6 +504,26 @@ private fun DashboardScreen() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
+            Spacer(Modifier.height(16.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val versionName = try {
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                } catch (_: Exception) {
+                    null
+                }
+                Text(
+                    "Houston ${versionName ?: ""}".trim(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = { checkForUpdates(silent = false) }, enabled = !checkingUpdate) {
+                    Text(if (checkingUpdate) "Checking…" else "Check for updates")
+                }
+            }
         }
     }
 
@@ -881,6 +969,104 @@ private fun psScoreText(a: PsAssignment): String {
     val p = a.possible ?: return ""
     fun fmt(v: Double) = if (v % 1.0 == 0.0) v.toInt().toString() else v.toString()
     return "${fmt(e)}/${fmt(p)}"
+}
+
+@Composable
+private fun UpdateCard(
+    state: UpdateManager.CheckResult?,
+    checking: Boolean,
+    downloading: Boolean,
+    progress: Pair<Long, Long>?,
+    onCheck: () -> Unit,
+    onDownload: (UpdateManager.UpdateInfo) -> Unit,
+    onInstall: (java.io.File) -> Unit,
+) {
+    if ((state == null || state is UpdateManager.CheckResult.UpToDate) && !checking && !downloading) return
+    Card(
+        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.SystemUpdate, null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(10.dp))
+                Text("App update", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(6.dp))
+            when {
+                checking -> {
+                    Text("Checking for updates…", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                state is UpdateManager.CheckResult.Available -> {
+                    val info = state.info
+                    Text(
+                        "v${info.versionName} is ready (${info.tag}).",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (info.notes.isNotBlank()) {
+                        Text(
+                            info.notes.take(400),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    val (done, total) = progress ?: Pair(0L, -1L)
+                    if (downloading) {
+                        if (total > 0) {
+                            LinearProgressIndicator(
+                                progress = { (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                "${done / 1_048_576} / ${total / 1_048_576} MB",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                            Text(
+                                "Downloading… ${done / 1_048_576} MB",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val staged = state.downloaded
+                        if (staged != null) {
+                            Button(onClick = { onInstall(staged) }, modifier = Modifier.weight(1f)) { Text("Install") }
+                        } else {
+                            Button(onClick = { onDownload(info) }, enabled = !downloading, modifier = Modifier.weight(1f)) {
+                                Text(if (downloading) "Downloading…" else "Download")
+                            }
+                        }
+                        OutlinedButton(onClick = onCheck, enabled = !downloading, modifier = Modifier.weight(1f)) {
+                            Text("Re-check")
+                        }
+                    }
+                    Text(
+                        "Updates install over this app — same signature, your data stays.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                state is UpdateManager.CheckResult.Failed -> {
+                    Text(state.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = onCheck) { Text("Try again") }
+                }
+                else -> {
+                    Text("You're up to date.", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
 }
 
 @Composable
