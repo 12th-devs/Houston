@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.0.0
+
+### Added
+
+- Calendar-first Home now leads with an intelligent daily briefing (Calendar → School → Swimming → Memories) plus ranked, deduplicated insights with deep links and dismiss.
+- School intelligence: grade-drop/improvement/below-threshold alerts, new/missing/due-soon assignment detection, configurable thresholds in the School tab, history snapshots compared within compatible terms only.
+- Swimming platform: multi-goal tracking across SCY/SCM/LCM (never cross-compared), swimmer profile, rich practice journal with templates and voice notes, manual verified results, Meet Mobile guided import (allowlisted public endpoints, identity confirmation, honest unavailable states), training-volume analytics.
+- Houston Memories: local-first library with collections, tags, favorites, full-text search, search history, recoverable trash, photo attachments with spec-faithful zoom viewer (pinch 1–8×, double-tap, clamped pan, accessible controls), voice notes, share-sheet capture, optional on-device analysis, JSON export.
+- Evening reflection (text or voice, never nagging) and an honest weekly review on Home.
+- Automation engine: template rules, triggers/conditions/actions, execution history, granular notification channels; morning-briefing alarm with boot rescheduling (best-effort, no exact-timing claims).
+- Dashboard grows to Home / Calendar / School / Swim / Memories; Settings stays one tap away in the Home header.
+
+### Improved
+
+- Coordinated refresh with last-sync labels; cached data renders instantly.
+- 17 new unit tests (153 total passing): swim math, course isolation, Meet Mobile digest/parsers, grade deltas, insight dedup, memory validation, automation conditions.
+
+### Notes
+
+- Storage stays file-based (SharedPreferences + internal JSON); no new dependencies. Legacy swim log migrates automatically.
+- Meet Mobile import covers published public competition data only; restricted/unpublished meets report honestly and manual entry always works.
+- PowerSchool remains read-only with portal session cookies; passwords are never stored.
+
 ## Unreleased
 
 ### Improved

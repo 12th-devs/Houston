@@ -26,11 +26,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Waves
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -65,7 +68,13 @@ class DashboardActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { DashboardTheme { DashboardScreen() } }
+        setContent { DashboardTheme { DashboardScreen(launchIntent = intent) } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        setContent { DashboardTheme { DashboardScreen(launchIntent = intent) } }
     }
 
     override fun onResume() {
@@ -93,10 +102,10 @@ private fun DashboardTheme(content: @Composable () -> Unit) {
     }
 }
 
-private enum class DashTab { HOME, CALENDAR, SCHOOL }
+private enum class DashTab { HOME, CALENDAR, SCHOOL, SWIM, MEMORIES }
 
 @Composable
-private fun DashboardScreen() {
+private fun DashboardScreen(launchIntent: Intent? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val today = remember { LocalDate.now() }
@@ -125,9 +134,68 @@ private fun DashboardScreen() {
     var psRefreshedAt by remember { mutableStateOf(PowerSchoolStore.refreshedAt(context)) }
     var gradeHist by remember { mutableStateOf(listOf<PowerSchoolStore.GradeSnapshot>()) }
 
-    // Swim state
+    // Legacy single-goal swim state (kept: migration source + home compatibility).
     var swim by remember { mutableStateOf(SwimStore.load(context)) }
     var swimExpanded by remember { mutableStateOf(false) }
+
+    // Swim platform state
+    var swimProfile by remember { mutableStateOf(SwimmerProfile()) }
+    var swimGoals by remember { mutableStateOf(listOf<SwimGoal>()) }
+    var practices by remember { mutableStateOf(listOf<PracticeSession>()) }
+    var raceResults by remember { mutableStateOf(listOf<RaceResult>()) }
+    var swimSyncLabel by remember { mutableStateOf<String?>(null) }
+    var meetStatus by remember { mutableStateOf<String?>(null) }
+    var showMeetConnect by remember { mutableStateOf(false) }
+
+    // Memories state
+    var memories by remember { mutableStateOf(listOf<MemoryRecord>()) }
+    var memoryTrash by remember { mutableStateOf(listOf<MemoryRecord>()) }
+    var memoryCollections by remember { mutableStateOf(listOf<MemoryCollection>()) }
+    var memoryQuery by remember { mutableStateOf("") }
+    var openMemory by remember { mutableStateOf<MemoryRecord?>(null) }
+    var viewerFile by remember { mutableStateOf<java.io.File?>(null) }
+    var showReflect by remember { mutableStateOf(false) }
+
+    // Intelligence state
+    var insights by remember { mutableStateOf(listOf<Insight>()) }
+    var alertPrefs by remember { mutableStateOf(SchoolAlertPrefs()) }
+    var autoRules by remember { mutableStateOf(listOf<AutomationRule>()) }
+    var autoRuns by remember { mutableStateOf(listOf<AutomationRun>()) }
+    var notifyPrefs by remember { mutableStateOf(mapOf<String, Boolean>()) }
+
+    fun reloadSwimPlatform() {
+        swimProfile = SwimPlatformStore.loadProfile(context)
+        swimGoals = SwimPlatformStore.loadGoals(context)
+        practices = SwimPlatformStore.loadPractices(context)
+        raceResults = SwimPlatformStore.loadResults(context)
+        swimSyncLabel = SwimPlatformStore.lastResultsSync(context)
+    }
+
+    fun reloadMemories() {
+        memories = MemoryStore.loadMemories(context)
+        memoryTrash = MemoryStore.loadMemories(context, includeTrashed = true).filter { it.trashed }
+        memoryCollections = MemoryStore.loadCollections(context)
+    }
+
+    fun reloadIntelligence() {
+        insights = rankInsights(InsightStore.load(context))
+        alertPrefs = SchoolAlertStore.load(context)
+        autoRules = AutomationEngine.loadRules(context)
+        autoRuns = AutomationEngine.loadRuns(context)
+        notifyPrefs = listOf(
+            HoustonNotifyPrefs.CH_BRIEFING, HoustonNotifyPrefs.CH_SCHOOL,
+            HoustonNotifyPrefs.CH_SWIM, HoustonNotifyPrefs.CH_MEMORY, HoustonNotifyPrefs.CH_AUTO,
+        ).associateWith { HoustonNotifyPrefs.enabled(context, it) }
+    }
+
+    fun publishInsights(newOnes: List<Insight>) {
+        if (newOnes.isEmpty()) return
+        val fresh = InsightStore.ingest(context, newOnes)
+        reloadIntelligence()
+        if (fresh.isNotEmpty()) {
+            InsightNotifier.notifyNew(context, rankInsights(fresh))
+        }
+    }
 
     fun reloadFeeds() {
         feeds.clear()
@@ -147,6 +215,36 @@ private fun DashboardScreen() {
             }
             psUi = DashboardPsUi.Content(error = null, syncing = false, stale = true)
         }
+    }
+
+    fun handleSharedIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.take(4000)
+        val subject = intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()
+        if (text.isNullOrBlank()) return
+        val mem = MemoryStore.upsert(
+            context,
+            MemoryRecord(title = subject?.take(80).orEmpty(), body = text, source = "share", originInfo = "Android share sheet"),
+        )
+        reloadMemories()
+        MemoryAnalysisRunner.enqueueExtract(context, mem.uuid, scope)
+        publishInsights(
+            listOf(
+                Insight(
+                    id = "memory.created:${mem.uuid}",
+                    kind = InsightKind.MEMORY,
+                    title = "Memory saved from share",
+                    explanation = (subject ?: text.take(80)).take(140),
+                    refs = listOf("memory:${mem.uuid}"),
+                    score = 40,
+                    actionLabel = "Open memory",
+                    actionTarget = "memory:${mem.uuid}",
+                ),
+            ),
+        )
+        tab = DashTab.MEMORIES
+        Toast.makeText(context, "Saved to Memories", Toast.LENGTH_SHORT).show()
+        intent.action = null
     }
 
     fun syncOneFeed(feed: ICalFeed) {
@@ -186,6 +284,8 @@ private fun DashboardScreen() {
             psProgress = "Connecting…"
             psUi = DashboardPsUi.SigningIn("Connecting…")
             try {
+                val prev = PowerSchoolStore.loadCourses(context)
+                val prevKeys = prev.flatMap { it.assignments }.map(::assignmentKey).toSet()
                 val client = PowerSchoolStore.client(context)
                 val raw = withContext(Dispatchers.IO) {
                     client.collectAll(account, password) { done, total ->
@@ -209,6 +309,10 @@ private fun DashboardScreen() {
                 }
                 psPassword = ""
                 psUi = DashboardPsUi.Content(error = null, syncing = false, stale = false)
+                // School intelligence: compare compatible snapshots only.
+                val scopedPrev = if (selectedTerm == null) prev else prev.filter { it.term == selectedTerm }
+                val scopedCur = if (selectedTerm == null) normalized else normalized.filter { it.term == selectedTerm }
+                publishInsights(detectSchoolChanges(scopedPrev, scopedCur, alertPrefs, prevKeys))
             } catch (e: PsException) {
                 val cached = PowerSchoolStore.loadCourses(context)
                 psCourses = cached
@@ -230,11 +334,43 @@ private fun DashboardScreen() {
         }
     }
 
+    fun navigateToTarget(target: String) {
+        when {
+            target.startsWith("school:") -> {
+                openCourseId = target.removePrefix("school:")
+                tab = DashTab.SCHOOL
+            }
+            target.startsWith("swim:") -> tab = DashTab.SWIM
+            target.startsWith("memory:") -> {
+                val uuid = target.removePrefix("memory:")
+                openMemory = MemoryStore.loadMemories(context, includeTrashed = true).firstOrNull { it.uuid == uuid }
+                tab = DashTab.MEMORIES
+            }
+            else -> tab = DashTab.HOME
+        }
+    }
+
     LaunchedEffect(Unit) {
         reloadFeeds()
         if (PowerSchoolStore.username(context) != null && PowerSchoolStore.loadCourses(context).isNotEmpty()) {
             reloadCachedPs()
         }
+        reloadSwimPlatform()
+        reloadMemories()
+        reloadIntelligence()
+        InsightStore.pruneExpired(context)
+        runCatching { HoustonScheduler.reschedule(context) }
+        // Evaluate automation rules on start; record runs (no repeat alerts).
+        val fired = AutomationEngine.evaluate(autoRules, emptyList(), insights)
+        if (fired.isNotEmpty()) {
+            val now = java.time.Instant.now().toString()
+            for ((rule, reason) in fired) {
+                AutomationEngine.recordRun(context, AutomationRun(rule.id, now, true, "start: $reason"))
+            }
+            autoRuns = AutomationEngine.loadRuns(context)
+        }
+        handleSharedIntent(launchIntent)
+        launchIntent?.getStringExtra("insight_target")?.let { navigateToTarget(it) }
     }
 
     // Terms + GPA + movers for the selected term.
@@ -268,9 +404,76 @@ private fun DashboardScreen() {
         return firstWithNew
     }
 
+    // Daily briefing inputs — every line comes from connected/local data.
+    val briefing = remember(feedsVersion, psCourses, swimGoals, practices, raceResults, memories, calDay) {
+        val calLines = runCatching {
+            ICalStore.occurrences(context, calDay, calDay).take(4).map {
+                "${it.summary} ${it.startTime?.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a")) ?: ""}".trim()
+            }
+        }.getOrDefault(emptyList()) +
+            PowerSchoolStore.dueOn(psCourses, calDay).take(3).map { "${it.name ?: "Assignment"} (${it.courseName})" }
+        val schoolLines = buildList {
+            movers.take(2).forEach { add("${it.courseName}: ${"%.1f".format(it.oldPercent)}% → ${"%.1f".format(it.newPercent)}%") }
+            PowerSchoolStore.upcoming(psCourses, LocalDate.now(), 3).take(3).forEach {
+                add("${it.name ?: "Assignment"} due ${it.dueIso ?: it.dueMdy ?: "soon"} (${it.courseName})")
+            }
+            if (psCourses.isNotEmpty() && isEmpty()) add("${termCourses.size} classes tracked · GPA ${gpa?.let { "%.2f".format(it) } ?: "—"}")
+        }
+        val swimLines = buildList {
+            swimGoals.filter { !it.completed }.take(2).forEach {
+                add("Next goal: ${it.label} → ${formatSwimTime(it.targetSec)} (best ${it.currentBestSec?.let { b -> formatSwimTime(b) } ?: "—"})")
+            }
+            raceResults.take(1).forEach { add("Latest verified: ${it.eventName} ${it.timeSec?.let { t -> formatSwimTime(t) } ?: ""} · ${it.meetName}".trim()) }
+        }
+        val memLines = memories.take(2).map { (it.title.ifBlank { it.body.take(50) }).take(80) }
+        buildDailyBriefing(
+            today = calDay,
+            calendarLines = calLines.take(5),
+            schoolLines = schoolLines.take(4),
+            swimLines = swimLines.take(3),
+            memoryLines = memLines,
+        )
+    }
+    val lastSyncLabel = remember(psRefreshedAt, swimSyncLabel) {
+        listOfNotNull(
+            psRefreshedAt?.let { "School ${it.take(16).replace('T', ' ')}" },
+            swimSyncLabel?.let { "Swim ${it.take(16).replace('T', ' ')}" },
+        ).joinToString(" · ").ifEmpty { null }
+    }
+
+    // Weekly review inputs — missing data reported honestly, never padded.
+    val weekly = remember(psCourses, practices, raceResults, memories, movers, feedsVersion) {
+        val weekAgoDay = LocalDate.now().minusDays(7)
+        val weekAgo = weekAgoDay.toString()
+        val calCount = runCatching { ICalStore.occurrences(context, weekAgoDay, LocalDate.now()).size }.getOrDefault(0)
+        val recentPractices = practices.filter { it.dateIso >= weekAgo }
+        val recentResults = raceResults.filter { (it.dateIso ?: "") >= weekAgo }
+        val recentMemories = memories.filter { it.createdIso >= weekAgo }
+        val recentAssign = PowerSchoolStore.distinctAssignments(psCourses)
+            .filter { a -> a.dueIso?.let { psIsoToLocalDate(it)?.let { d -> !d.isBefore(weekAgoDay) } } == true }
+        buildWeeklyReview(
+            weekLabel = "${weekAgoDay.format(java.time.format.DateTimeFormatter.ofPattern("MMM d"))} – " +
+                LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("MMM d")),
+            calendarHighlights = if (calCount == 0) emptyList() else listOf("$calCount events on your calendars"),
+            assignmentActivity = recentAssign.take(4).map {
+                "${it.name ?: "Assignment"} (${it.courseName}) · ${it.status}"
+            },
+            gradeChanges = movers.map { "${it.courseName}: ${"%.1f".format(it.oldPercent)}% → ${"%.1f".format(it.newPercent)}%" },
+            swimResults = recentResults.take(3).map {
+                "${it.eventName} ${it.timeSec?.let { t -> formatSwimTime(t) } ?: ""} · ${it.meetName}".trim()
+            },
+            practiceVolume = if (recentPractices.isEmpty()) emptyList() else listOf(
+                "${recentPractices.size} practices · ${recentPractices.sumOf { it.distanceYd ?: 0 }} yd",
+            ),
+            memoryHighlights = recentMemories.take(3).map { (it.title.ifBlank { it.body.take(50) }).take(80) },
+        )
+    }
+
     val homeScroll = rememberScrollState()
     val calScroll = rememberScrollState()
     val schoolScroll = rememberScrollState()
+    val swimScroll = rememberScrollState()
+    val memScroll = rememberScrollState()
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize()) {
@@ -310,6 +513,9 @@ private fun DashboardScreen() {
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
+                                    IconButton(onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) }) {
+                                        Icon(Icons.Outlined.Settings, "Houston Settings")
+                                    }
                                 }
                             }
                             Column(Modifier.padding(horizontal = 18.dp)) {
@@ -343,7 +549,41 @@ private fun DashboardScreen() {
                                     tab = DashTab.CALENDAR
                                 },
                                 onOpenSchool = { tab = DashTab.SCHOOL },
+                                briefing = briefing,
+                                insights = insights.filter { !it.acked }.take(5),
+                                weekly = weekly,
+                                lastSyncLabel = lastSyncLabel,
+                                onRefreshAll = {
+                                    syncAllFeeds()
+                                    doPsRefresh(null, null)
+                                },
+                                onAckInsight = { id ->
+                                    InsightStore.ack(context, id)
+                                    reloadIntelligence()
+                                },
+                                onOpenInsight = { navigateToTarget(it.actionTarget ?: it.id) },
+                                onReflect = { showReflect = true },
                             )
+                            if (showReflect) {
+                                EveningReflectionDialog(
+                                    onSave = { text, voice ->
+                                        val mem = MemoryStore.upsert(
+                                            context,
+                                            MemoryRecord(
+                                                title = "Reflection · ${LocalDate.now()}",
+                                                body = text,
+                                                voiceUris = listOfNotNull(voice),
+                                                source = "reflection",
+                                            ),
+                                        )
+                                        reloadMemories()
+                                        MemoryAnalysisRunner.enqueueExtract(context, mem.uuid, scope)
+                                        showReflect = false
+                                        Toast.makeText(context, "Reflection saved", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onSkip = { showReflect = false },
+                                )
+                            }
                             Spacer(Modifier.height(8.dp))
                             }
                         }
@@ -426,10 +666,227 @@ private fun DashboardScreen() {
                                     psUi = DashboardPsUi.SignedOut
                                 },
                             )
+                            Spacer(Modifier.height(12.dp))
+                            SchoolAlertsCard(prefs = alertPrefs, onSave = {
+                                SchoolAlertStore.save(context, it)
+                                alertPrefs = it
+                            })
+                            Spacer(Modifier.height(12.dp))
+                            AutomationsCard(
+                                rules = autoRules,
+                                runs = autoRuns,
+                                notifyPrefs = notifyPrefs,
+                                onToggleRule = { id, on ->
+                                    val updated = autoRules.map { if (it.id == id) it.copy(enabled = on) else it }
+                                    AutomationEngine.saveRules(context, updated)
+                                    autoRules = updated
+                                    AutomationEngine.recordRun(
+                                        context,
+                                        AutomationRun(id, java.time.Instant.now().toString(), true, if (on) "Enabled" else "Disabled"),
+                                    )
+                                    autoRuns = AutomationEngine.loadRuns(context)
+                                },
+                                onToggleChannel = { ch, on ->
+                                    HoustonNotifyPrefs.setEnabled(context, ch, on)
+                                    reloadIntelligence()
+                                },
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                    DashTab.SWIM -> {
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(swimScroll)
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 6.dp),
+                        ) {
+                            SwimPlatformPage(
+                                profile = swimProfile,
+                                goals = swimGoals,
+                                practices = practices,
+                                results = raceResults,
+                                lastSync = swimSyncLabel,
+                                meetStatus = meetStatus,
+                                onSaveProfile = {
+                                    SwimPlatformStore.saveProfile(context, it)
+                                    reloadSwimPlatform()
+                                },
+                                onSaveGoal = { g ->
+                                    SwimPlatformStore.saveGoals(context, swimGoals.filter { it.id != g.id } + g)
+                                    reloadSwimPlatform()
+                                },
+                                onDeleteGoal = { id ->
+                                    SwimPlatformStore.saveGoals(context, swimGoals.filter { it.id != id })
+                                    reloadSwimPlatform()
+                                },
+                                onAddPractice = { p ->
+                                    SwimPlatformStore.savePractices(context, listOf(p) + practices)
+                                    reloadSwimPlatform()
+                                    publishInsights(
+                                        listOf(
+                                            Insight(
+                                                id = "swim.practice:${p.id}",
+                                                kind = InsightKind.SWIM,
+                                                title = "Practice logged (${p.dateIso})",
+                                                explanation = listOfNotNull(
+                                                    p.distanceYd?.let { "$it yd" },
+                                                    p.durationMin?.let { "$it min" },
+                                                    p.notes.takeIf { it.isNotBlank() },
+                                                ).joinToString(" · ").ifEmpty { "Practice recorded." },
+                                                refs = listOf("practice:${p.id}"),
+                                                score = 35,
+                                                actionLabel = "Open swim",
+                                                actionTarget = "swim:goals",
+                                            ),
+                                        ),
+                                    )
+                                },
+                                onDeletePractice = { id ->
+                                    SwimPlatformStore.savePractices(context, practices.filter { it.id != id })
+                                    reloadSwimPlatform()
+                                },
+                                onAddResult = { r ->
+                                    val fresh = SwimPlatformStore.importResults(context, listOf(r))
+                                    if (fresh.isNotEmpty()) {
+                                        val (updated, goalInsights) = applyResultToGoals(swimGoals, fresh.first())
+                                        SwimPlatformStore.saveGoals(context, updated)
+                                        reloadSwimPlatform()
+                                        publishInsights(goalInsights)
+                                    } else {
+                                        meetStatus = "That result is already imported — no duplicates added."
+                                    }
+                                },
+                                onConnectResults = { showMeetConnect = true },
+                            )
+                            if (showMeetConnect) {
+                                MeetImportDialog(
+                                    profileName = swimProfile.name,
+                                    onDismiss = { showMeetConnect = false },
+                                    onImport = { imported, label ->
+                                        val fresh = SwimPlatformStore.importResults(context, imported)
+                                        var goalInsights: List<Insight> = emptyList()
+                                        if (fresh.isNotEmpty()) {
+                                            var cur = swimGoals
+                                            val all = mutableListOf<Insight>()
+                                            for (res in fresh) {
+                                                val (u, ins) = applyResultToGoals(cur, res)
+                                                cur = u
+                                                all.addAll(ins)
+                                            }
+                                            SwimPlatformStore.saveGoals(context, cur)
+                                            goalInsights = all
+                                        }
+                                        reloadSwimPlatform()
+                                        meetStatus = if (fresh.isEmpty()) {
+                                            "No new results in $label — duplicates skipped, nothing invented."
+                                        } else {
+                                            "Imported ${fresh.size} verified result${if (fresh.size == 1) "" else "s"} from $label."
+                                        }
+                                        publishInsights(
+                                            goalInsights + listOf(
+                                                Insight(
+                                                    id = "swim.result_imported:${fresh.firstOrNull()?.id ?: label}",
+                                                    kind = InsightKind.SWIM,
+                                                    title = "Results imported from $label",
+                                                    explanation = "${fresh.size} new verified result${if (fresh.size == 1) "" else "s"}.",
+                                                    refs = fresh.map { "race:${it.id}" },
+                                                    score = 55,
+                                                    actionLabel = "Open swim",
+                                                    actionTarget = "swim:goals",
+                                                ),
+                                            ),
+                                        )
+                                        showMeetConnect = false
+                                    },
+                                    onStatus = { meetStatus = it },
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                    DashTab.MEMORIES -> {
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(memScroll)
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 6.dp),
+                        ) {
+                            if (openMemory != null) {
+                                MemoryDetailSheet(
+                                    memory = openMemory!!,
+                                    collections = memoryCollections,
+                                    onSave = {
+                                        MemoryStore.upsert(context, it)
+                                        reloadMemories()
+                                        openMemory = it
+                                    },
+                                    onClose = { openMemory = null },
+                                    onRetryAnalysis = { uuid ->
+                                        MemoryAnalysisRunner.enqueueExtract(context, uuid, scope)
+                                        Toast.makeText(context, "Analysis re-queued", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onViewImage = { viewerFile = it },
+                                )
+                                Spacer(Modifier.height(12.dp))
+                            }
+                            val shown = remember(memoryQuery, memories) {
+                                if (memoryQuery.isBlank()) memories
+                                else MemoryStore.search(context, memoryQuery)
+                            }
+                            MemoriesPage(
+                                memories = shown,
+                                collections = memoryCollections,
+                                trash = memoryTrash,
+                                query = memoryQuery,
+                                onQuery = { memoryQuery = it },
+                                onSave = { m ->
+                                    val saved = MemoryStore.upsert(context, m)
+                                    reloadMemories()
+                                    MemoryAnalysisRunner.enqueueExtract(context, saved.uuid, scope)
+                                    publishInsights(
+                                        listOf(
+                                            Insight(
+                                                id = "memory.created:${saved.uuid}",
+                                                kind = InsightKind.MEMORY,
+                                                title = "Memory captured",
+                                                explanation = (saved.title.ifBlank { saved.body.take(80) }).take(140).ifEmpty { "New memory saved." },
+                                                refs = listOf("memory:${saved.uuid}"),
+                                                score = 40,
+                                                actionLabel = "Open memory",
+                                                actionTarget = "memory:${saved.uuid}",
+                                            ),
+                                        ),
+                                    )
+                                },
+                                onTrash = {
+                                    MemoryStore.trash(context, it)
+                                    reloadMemories()
+                                },
+                                onRestore = {
+                                    MemoryStore.restore(context, it)
+                                    reloadMemories()
+                                },
+                                onDelete = {
+                                    MemoryStore.deletePermanently(context, it)
+                                    reloadMemories()
+                                },
+                                onToggleFavorite = { uuid ->
+                                    memories.firstOrNull { it.uuid == uuid }?.let {
+                                        MemoryStore.upsert(context, it.copy(favorite = !it.favorite))
+                                        reloadMemories()
+                                    }
+                                },
+                                onOpen = { openMemory = it },
+                            )
                             Spacer(Modifier.height(8.dp))
                         }
                     }
                 }
+                }
+                // Full-screen image viewer overlay (above tab content, below nav bar).
+                if (viewerFile != null) {
+                    Box(Modifier.matchParentSize()) {
+                        ImageViewerDialog(file = viewerFile!!, onClose = { viewerFile = null })
+                    }
                 }
             }
 
@@ -470,11 +927,17 @@ private fun DashboardScreen() {
                     label = { Text("School") },
                 )
                 NavigationBarItem(
-                        selected = false,
-                        onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) },
-                        icon = { Icon(Icons.Outlined.Settings, "Settings") },
-                        label = { Text("Settings") },
-                    )
+                    selected = tab == DashTab.SWIM,
+                    onClick = { tab = DashTab.SWIM },
+                    icon = { Icon(Icons.Outlined.Waves, "Swim") },
+                    label = { Text("Swim") },
+                )
+                NavigationBarItem(
+                    selected = tab == DashTab.MEMORIES,
+                    onClick = { tab = DashTab.MEMORIES },
+                    icon = { Icon(Icons.Outlined.Book, "Memories") },
+                    label = { Text("Memories") },
+                )
                     }
                 }
             }

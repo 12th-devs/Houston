@@ -19,6 +19,7 @@ import androidx.compose.material.icons.automirrored.outlined.TrendingUp
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Event
+import androidx.compose.material.icons.outlined.Nightlight
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material3.Card
@@ -63,6 +64,14 @@ fun HomePage(
     onDeleteSwimEntry: (String) -> Unit,
     onOpenCalendar: (LocalDate) -> Unit,
     onOpenSchool: () -> Unit,
+    briefing: DailyBriefing? = null,
+    insights: List<Insight> = emptyList(),
+    weekly: BriefingSection? = null,
+    lastSyncLabel: String? = null,
+    onRefreshAll: () -> Unit = {},
+    onAckInsight: (String) -> Unit = {},
+    onOpenInsight: (Insight) -> Unit = {},
+    onReflect: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val today = remember { LocalDate.now() }
@@ -147,6 +156,16 @@ fun HomePage(
                 }
             }
         }
+        Spacer(Modifier.height(12.dp))
+    }
+
+    // Intelligent daily briefing (Calendar → School → Swimming → Memories).
+    if (briefing != null) {
+        BriefingCard(briefing = briefing, lastSyncLabel = lastSyncLabel, onRefresh = onRefreshAll)
+        Spacer(Modifier.height(12.dp))
+    }
+    if (insights.isNotEmpty()) {
+        InsightListCard(insights = insights, onAck = onAckInsight, onOpen = onOpenInsight)
         Spacer(Modifier.height(12.dp))
     }
 
@@ -287,6 +306,24 @@ fun HomePage(
         onAddEntry = onAddSwimEntry,
         onDeleteEntry = onDeleteSwimEntry,
     )
+    Spacer(Modifier.height(12.dp))
+
+    SectionCard(
+        icon = Icons.Outlined.Nightlight,
+        title = "Evening reflection",
+        viewAllLabel = "Reflect",
+        onViewAll = onReflect,
+    ) {
+        Text(
+            "A line or two about today — saved as a memory, never a nag.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (weekly != null) {
+        Spacer(Modifier.height(12.dp))
+        WeeklyReviewCard(week = weekly)
+    }
 }
 
 @Composable

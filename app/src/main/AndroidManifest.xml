@@ -95,7 +95,18 @@
             android:name=".DashboardActivity"
             android:exported="true"
             android:icon="@drawable/ic_commander_bar"
-            android:label="Houston" />
+            android:label="Houston">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".SettingsActivity"
             android:exported="true"
@@ -269,6 +280,13 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/home_typing_accessibility" />
         </service>
+        <receiver
+            android:name=".BriefingReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.astroboii47.commander.MORNING_BRIEFING" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
