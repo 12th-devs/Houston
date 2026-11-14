@@ -31,8 +31,8 @@ android {
         applicationId = "com.astroboii47.commander"
         minSdk = 29
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.2.0-alpha.4"
+        versionCode = 14
+        versionName = "0.2.0-alpha.5"
         // Keep only English strings from libraries; translations add bulk for little benefit in alpha.
         resourceConfigurations += "en"
     }

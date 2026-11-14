@@ -6,6 +6,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
@@ -262,39 +268,51 @@ private fun DashboardScreen() {
         return firstWithNew
     }
 
+    val homeScroll = rememberScrollState()
+    val calScroll = rememberScrollState()
+    val schoolScroll = rememberScrollState()
+
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize()) {
-            // Full-bleed header: waves run edge to edge behind the status bar.
-            Box(Modifier.fillMaxWidth()) {
-                HeaderWaves(Modifier.fillMaxWidth().height(172.dp))
-                Row(
-                    Modifier.fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(horizontal = 18.dp)
-                        .padding(top = 10.dp, bottom = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    WaveformMark()
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Houston", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                        Text(
-                            today.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMMM d")),
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                when (tab) {
+                AnimatedContent(
+                    targetState = tab,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(180)) togetherWith
+                            fadeOut(animationSpec = tween(180))
+                    },
+                    label = "dash-tab",
+                ) { page ->
+                when (page) {
                     DashTab.HOME -> {
                         Column(
-                            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                                .navigationBarsPadding()
-                                .padding(horizontal = 18.dp, vertical = 6.dp),
+                            Modifier.fillMaxSize().verticalScroll(homeScroll),
                         ) {
+                            // Home-only header: full-bleed waves behind the status
+                            // bar, scrolling away with the content so it never
+                            // covers anything.
+                            Box(Modifier.fillMaxWidth()) {
+                                HeaderWaves(Modifier.fillMaxWidth().height(190.dp))
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .statusBarsPadding()
+                                        .padding(horizontal = 18.dp)
+                                        .padding(top = 10.dp, bottom = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    WaveformMark()
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text("Houston", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            today.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                            Column(Modifier.padding(horizontal = 18.dp)) {
                             HomePage(
                                 feeds = feeds,
                                 feedsVersion = feedsVersion,
@@ -327,13 +345,14 @@ private fun DashboardScreen() {
                                 onOpenSchool = { tab = DashTab.SCHOOL },
                             )
                             Spacer(Modifier.height(8.dp))
+                            }
                         }
                     }
                     DashTab.CALENDAR -> {
                         Column(
-                            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                                .navigationBarsPadding()
-                                .padding(horizontal = 18.dp, vertical = 6.dp),
+                            Modifier.fillMaxSize().verticalScroll(calScroll)
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 6.dp),
                         ) {
                             CalendarPage(
                                 feeds = feeds,
@@ -350,9 +369,9 @@ private fun DashboardScreen() {
                     }
                     DashTab.SCHOOL -> {
                         Column(
-                            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-                                .navigationBarsPadding()
-                                .padding(horizontal = 18.dp, vertical = 6.dp),
+                            Modifier.fillMaxSize().verticalScroll(schoolScroll)
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 6.dp),
                         ) {
                             // Map the dashboard auth state onto the page's view state.
                             val pageUi: DashboardPsUi = when (val s = psUi) {
@@ -411,9 +430,27 @@ private fun DashboardScreen() {
                         }
                     }
                 }
+                }
             }
 
-            NavigationBar {
+            // Floating M3E-style bar: pill with margins, never covering content.
+            Box(
+                Modifier.fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 18.dp)
+                    .padding(top = 8.dp, bottom = 12.dp),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(28.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    tonalElevation = 3.dp,
+                    shadowElevation = 6.dp,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    NavigationBar(
+                        containerColor = Color.Transparent,
+                        tonalElevation = 0.dp,
+                    ) {
                 NavigationBarItem(
                     selected = tab == DashTab.HOME,
                     onClick = { tab = DashTab.HOME },
@@ -433,11 +470,13 @@ private fun DashboardScreen() {
                     label = { Text("School") },
                 )
                 NavigationBarItem(
-                    selected = false,
-                    onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) },
-                    icon = { Icon(Icons.Outlined.Settings, "Settings") },
-                    label = { Text("Settings") },
-                )
+                        selected = false,
+                        onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) },
+                        icon = { Icon(Icons.Outlined.Settings, "Settings") },
+                        label = { Text("Settings") },
+                    )
+                    }
+                }
             }
         }
     }
