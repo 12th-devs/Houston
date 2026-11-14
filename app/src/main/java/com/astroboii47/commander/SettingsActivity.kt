@@ -312,6 +312,124 @@ class SettingsActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
                     Section("Integrations")
                     ChoiceSetting("AI settings", "Provider, model, and API key") { page = "ai" }
+                    Section("App")
+                    var showUpdate by remember { mutableStateOf(false) }
+                    var updateState by remember { mutableStateOf<UpdateManager.CheckResult?>(null) }
+                    var checkingUpdate by remember { mutableStateOf(false) }
+                    var updProgress by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+                    var downloading by remember { mutableStateOf(false) }
+                    val appVersion = remember {
+                        try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { null }
+                    }
+                    ChoiceSetting(
+                        "App updates",
+                        "v${appVersion ?: "?"} · tap to check GitHub pre-releases",
+                    ) { showUpdate = true }
+                    if (showUpdate) {
+                        AlertDialog(
+                            onDismissRequest = { if (!checkingUpdate && !downloading) showUpdate = false },
+                            title = { Text("App updates") },
+                            text = {
+                                Column {
+                                    when (val st = updateState) {
+                                        null -> if (checkingUpdate) {
+                                            Text("Checking…", style = MaterialTheme.typography.bodyMedium)
+                                            Spacer(Modifier.height(8.dp))
+                                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                                        } else {
+                                            Text(
+                                                "Houston checks GitHub pre-releases and installs them over this app — same signature, your data stays.",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                            )
+                                        }
+                                        is UpdateManager.CheckResult.UpToDate ->
+                                            Text("You're on the latest release.", style = MaterialTheme.typography.bodyMedium)
+                                        is UpdateManager.CheckResult.Failed ->
+                                            Text(st.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                                        is UpdateManager.CheckResult.Available -> {
+                                            Text("v${st.info.versionName} is ready (${st.info.tag}).", style = MaterialTheme.typography.titleSmall)
+                                            if (st.info.notes.isNotBlank()) {
+                                                Text(st.info.notes.take(500), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                                            }
+                                            val (done, total) = updProgress ?: Pair(0L, -1L)
+                                            if (downloading) {
+                                                Spacer(Modifier.height(8.dp))
+                                                if (total > 0) {
+                                                    LinearProgressIndicator(progress = { (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                                                    Text("${done / 1_048_576} / ${total / 1_048_576} MB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                } else {
+                                                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                                                    Text("Downloading… ${done / 1_048_576} MB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                val st = updateState
+                                when {
+                                    checkingUpdate || downloading -> {}
+                                    st is UpdateManager.CheckResult.Available && st.downloaded != null -> {
+                                        TextButton(onClick = {
+                                            runCatching { UpdateManager.install(this@SettingsActivity, st.downloaded) }.onFailure {
+                                                Toast.makeText(this@SettingsActivity, "Couldn't open installer: ${it.message?.take(120)}", Toast.LENGTH_LONG).show()
+                                            }
+                                            showUpdate = false
+                                        }) { Text("Install") }
+                                    }
+                                    st is UpdateManager.CheckResult.Available -> {
+                                        TextButton(onClick = {
+                                            val info = st.info
+                                            downloading = true
+                                            updProgress = Pair(0L, -1L)
+                                            lifecycleScope.launch(Dispatchers.IO) {
+                                                try {
+                                                    val apk = UpdateManager.download(this@SettingsActivity, info) { done, total ->
+                                                        lifecycleScope.launch(Dispatchers.Main) { updProgress = Pair(done, total) }
+                                                    }
+                                                    withContext(Dispatchers.Main) {
+                                                        updateState = UpdateManager.CheckResult.Available(info, apk)
+                                                        if (!UpdateManager.canInstall(this@SettingsActivity)) {
+                                                            Toast.makeText(this@SettingsActivity, "Allow Houston to install apps, then tap Install.", Toast.LENGTH_LONG).show()
+                                                            UpdateManager.openUnknownSourcesSettings(this@SettingsActivity)
+                                                        }
+                                                    }
+                                                } catch (e: Exception) {
+                                                    withContext(Dispatchers.Main) {
+                                                        updateState = UpdateManager.CheckResult.Failed((e.message ?: "Download failed.").take(200))
+                                                    }
+                                                } finally {
+                                                    withContext(Dispatchers.Main) {
+                                                        downloading = false
+                                                        updProgress = null
+                                                    }
+                                                }
+                                            }
+                                        }) { Text("Download") }
+                                    }
+                                    else -> {
+                                        TextButton(onClick = {
+                                            checkingUpdate = true
+                                            lifecycleScope.launch(Dispatchers.IO) {
+                                                val result = UpdateManager.check(this@SettingsActivity)
+                                                withContext(Dispatchers.Main) {
+                                                    updateState = result
+                                                    checkingUpdate = false
+                                                    if (result is UpdateManager.CheckResult.Failed) {
+                                                        Toast.makeText(this@SettingsActivity, result.message, Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
+                                            }
+                                        }) { Text("Check now") }
+                                    }
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { if (!checkingUpdate && !downloading) showUpdate = false }) { Text("Close") }
+                            },
+                        )
+                    }
                     Section("Privacy")
                     ChoiceSetting("Clear clipboard history", "Delete text saved by Houston") { CommandBarHistory.clearClipboard(context); Toast.makeText(context, "Clipboard history cleared", Toast.LENGTH_SHORT).show() }
                     ChoiceSetting("Clear search history and ranking", "Reset learned results") { CommandBarHistory.clearSearches(context); CommandBarRanker.clear(context); Toast.makeText(context, "Search history and ranking cleared", Toast.LENGTH_SHORT).show() }
