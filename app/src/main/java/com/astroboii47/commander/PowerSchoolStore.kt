@@ -42,9 +42,54 @@ object PowerSchoolStore {
     fun setSelectedTerm(context: Context, term: String) =
         SettingsStore.edit(context, PREFS) { putString(KEY_SELECTED_TERM, term) }
 
+    data class GradeSnapshot(val date: String, val gpa: Double?, val percents: Map<String, Double>)
+
+    private const val KEY_GRADE_HISTORY = "grade_history"
+
+    /** Rolling per-day snapshots (cap 60) backing GPA deltas and course movers. */
+    fun recordGradeSnapshot(context: Context, courses: List<PsCourse>, today: String) {
+        val history = gradeHistory(context).toMutableList()
+        val percents = courses.mapNotNull { c ->
+            c.gradePercent?.let { "${c.id}|${c.term}" to it }
+        }.toMap()
+        val snap = GradeSnapshot(today, psCourseGpa(courses), percents)
+        if (history.lastOrNull()?.date == today) history[history.lastIndex] = snap
+        else history.add(snap)
+        while (history.size > 60) history.removeAt(0)
+        val b = StringBuilder("[")
+        history.forEachIndexed { i, s ->
+            if (i > 0) b.append(',')
+            b.append("{\"d\":\"${escapeJson(s.date)}\",\"gpa\":${s.gpa?.toString() ?: "null"},\"c\":{")
+            s.percents.entries.forEachIndexed { j, (k, v) ->
+                if (j > 0) b.append(',')
+                b.append("\"${escapeJson(k)}\":$v")
+            }
+            b.append("}}")
+        }
+        b.append(']')
+        SettingsStore.edit(context, PREFS) { putString(KEY_GRADE_HISTORY, b.toString()) }
+    }
+
+    fun gradeHistory(context: Context): List<GradeSnapshot> {
+        val raw = SettingsStore.getString(context, PREFS, KEY_GRADE_HISTORY) ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            ((parseJson(raw) as? JVal.Arr)?.l ?: emptyList()).mapNotNull { e ->
+                if (e !is JVal.Obj) return@mapNotNull null
+                val d = e.objStr("d") ?: return@mapNotNull null
+                val gpa = (e.obj("gpa") as? JVal.Num)?.v
+                val courses = (e.obj("c") as? JVal.Obj)?.m?.mapNotNull { (k, v) ->
+                    (v as? JVal.Num)?.v?.let { k to it }
+                }?.toMap() ?: emptyMap()
+                GradeSnapshot(d, gpa, courses)
+            }
+        }.getOrDefault(emptyList())
+    }
+
     fun clearAccount(context: Context) {
         SettingsStore.edit(context, PREFS) {
             remove(KEY_USERNAME); remove(KEY_REFRESHED_AT); remove(KEY_SELECTED_TERM)
+            remove(KEY_GRADE_HISTORY)
         }
         File(context.filesDir, "powerschool").let { dir ->
             File(dir, "session.json").delete()

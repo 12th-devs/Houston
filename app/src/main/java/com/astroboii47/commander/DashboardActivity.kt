@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,16 +27,32 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.TrendingDown
+import androidx.compose.material.icons.automirrored.outlined.TrendingUp
+import androidx.compose.material.icons.outlined.AcUnit
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Event
+import androidx.compose.material.icons.outlined.Group
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
-import androidx.compose.material.icons.outlined.SystemUpdate
+import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.SystemUpdate
+import androidx.compose.material.icons.outlined.Thunderstorm
+import androidx.compose.material.icons.outlined.WaterDrop
+import androidx.compose.material.icons.outlined.Waves
+import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -68,11 +85,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -83,9 +108,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val DAY_HEADER = DateTimeFormatter.ofPattern("EEE, d MMM")
 private val MONTH_TITLE = DateTimeFormatter.ofPattern("MMMM yyyy")
 private val TIME_FMT = DateTimeFormatter.ofPattern("h:mm a")
+private val AGENDaExtra: Long = 45L
 private const val AGENDA_WINDOW_DAYS = 45L
 
 class DashboardActivity : ComponentActivity() {
@@ -127,13 +152,24 @@ private sealed interface PsUi {
     data class Failure(val message: String, val cached: List<PsCourse>) : PsUi
 }
 
+private enum class DashTab { HOME, CALENDAR, SCHOOL, SETTINGS }
+
 @Composable
 private fun DashboardScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val scroll = rememberScrollState()
     var today by remember { mutableStateOf(LocalDate.now()) }
     var visibleMonth by remember { mutableStateOf(YearMonth.now()) }
     var selectedDay by remember { mutableStateOf(LocalDate.now()) }
+    var tab by remember { mutableStateOf(DashTab.HOME) }
+    var calendarY by remember { mutableStateOf(0) }
+    var schoolY by remember { mutableStateOf(0) }
+
+    fun scrollTo(px: Int) {
+        scope.launch { scroll.animateScrollTo(px.coerceAtLeast(0)) }
+    }
 
     // iCal state
     val feeds = remember { mutableStateListOf<ICalFeed>() }
@@ -151,12 +187,41 @@ private fun DashboardScreen() {
     var selectedTerm by remember { mutableStateOf(PowerSchoolStore.selectedTerm(context)) }
     var psCourses by remember { mutableStateOf(listOf<PsCourse>()) }
     var psRefreshedAt by remember { mutableStateOf(PowerSchoolStore.refreshedAt(context)) }
+    var gradeHist by remember { mutableStateOf(listOf<PowerSchoolStore.GradeSnapshot>()) }
+    var schoolExpanded by remember { mutableStateOf(false) }
 
-    // App updates (GitHub pre-releases).
+    // Weather + swim + updates
+    var wx by remember { mutableStateOf(WeatherStore.cached(context)) }
+    var showLocation by remember { mutableStateOf(false) }
+    var swim by remember { mutableStateOf(SwimStore.load(context)) }
+    var showSwimTargets by remember { mutableStateOf(false) }
+    var showSwimLog by remember { mutableStateOf(false) }
+    var swimExpanded by remember { mutableStateOf(false) }
     var updateState by remember { mutableStateOf<UpdateManager.CheckResult?>(null) }
     var checkingUpdate by remember { mutableStateOf(false) }
     var dlProgress by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var downloading by remember { mutableStateOf(false) }
+    var notifProbe by remember { mutableIntStateOf(0) }
+
+    fun reloadFeeds() {
+        feeds.clear()
+        feeds.addAll(ICalStore.list(context))
+        feedsVersion++
+    }
+
+    fun reloadCachedPs() {
+        val cached = PowerSchoolStore.loadCourses(context)
+        psCourses = cached
+        gradeHist = PowerSchoolStore.gradeHistory(context)
+        if (cached.isNotEmpty()) {
+            val terms = psCourseTerms(cached)
+            if (selectedTerm == null || selectedTerm !in terms) {
+                selectedTerm = terms.maxByOrNull { t -> cached.sumOf { c -> if (c.term == t) c.assignments.size else 0 } }
+                selectedTerm?.let { PowerSchoolStore.setSelectedTerm(context, it) }
+            }
+            psUi = PsUi.Ready(cached, PowerSchoolStore.refreshedAt(context), stale = true)
+        }
+    }
 
     fun checkForUpdates(silent: Boolean = false) {
         if (checkingUpdate) return
@@ -174,31 +239,16 @@ private fun DashboardScreen() {
         }
     }
 
-    fun reloadFeeds() {
-        feeds.clear()
-        feeds.addAll(ICalStore.list(context))
-        feedsVersion++
-    }
-
-    fun reloadCachedPs() {
-        val cached = PowerSchoolStore.loadCourses(context)
-        psCourses = cached
-        if (cached.isNotEmpty()) {
-            val terms = psCourseTerms(cached)
-            if (selectedTerm == null || selectedTerm !in terms) {
-                selectedTerm = terms.maxByOrNull { t -> cached.sumOf { c -> if (c.term == t) c.assignments.size else 0 } }
-                selectedTerm?.let { PowerSchoolStore.setSelectedTerm(context, it) }
-            }
-            psUi = PsUi.Ready(cached, PowerSchoolStore.refreshedAt(context), stale = true)
-        }
-    }
-
     LaunchedEffect(Unit) {
         reloadFeeds()
         if (PowerSchoolStore.username(context) != null && PowerSchoolStore.loadCourses(context).isNotEmpty()) {
             reloadCachedPs()
         }
         checkForUpdates(silent = true)
+        if (WeatherStore.needsRefresh(context, LocalDate.now())) {
+            val fresh = withContext(Dispatchers.IO) { WeatherStore.refresh(context) }
+            if (fresh != null) wx = fresh
+        }
     }
 
     fun doPsRefresh(account: String?, password: String?) {
@@ -214,10 +264,14 @@ private fun DashboardScreen() {
                 }
                 val normalized = normalizeRawRecords(raw, LocalDate.now())
                 val stamp = java.time.Instant.now().toString()
-                withContext(Dispatchers.IO) { PowerSchoolStore.saveCourses(context, normalized, stamp) }
+                withContext(Dispatchers.IO) {
+                    PowerSchoolStore.saveCourses(context, normalized, stamp)
+                    PowerSchoolStore.recordGradeSnapshot(context, normalized, LocalDate.now().toString())
+                }
                 if (account != null) PowerSchoolStore.setUsername(context, account)
                 psCourses = normalized
                 psRefreshedAt = stamp
+                gradeHist = PowerSchoolStore.gradeHistory(context)
                 val terms = psCourseTerms(normalized)
                 if (selectedTerm == null || selectedTerm !in terms) {
                     selectedTerm = terms.maxByOrNull { t -> normalized.sumOf { c -> if (c.term == t) c.assignments.size else 0 } }
@@ -228,6 +282,7 @@ private fun DashboardScreen() {
             } catch (e: PsException) {
                 val cached = PowerSchoolStore.loadCourses(context)
                 psCourses = cached
+                gradeHist = PowerSchoolStore.gradeHistory(context)
                 psUi = if (e is PsException.SessionExpired && cached.isEmpty()) {
                     PsUi.SignedOut
                 } else {
@@ -239,6 +294,7 @@ private fun DashboardScreen() {
             } catch (e: Exception) {
                 val cached = PowerSchoolStore.loadCourses(context)
                 psCourses = cached
+                gradeHist = PowerSchoolStore.gradeHistory(context)
                 psUi = PsUi.Failure("Refresh failed: ${(e.message ?: "unknown error").take(160)}", cached)
             }
         }
@@ -269,261 +325,382 @@ private fun DashboardScreen() {
     val icalOccurrences = remember(feedsVersion, windowStart, windowEnd) {
         runCatching { ICalStore.occurrences(context, windowStart, windowEnd) }.getOrDefault(emptyList())
     }
+    val feedColorIdx = remember(feeds) { feeds.mapIndexed { i, f -> f.id to (i % 3) }.toMap() }
+    val feedPalette = listOf(MaterialTheme.colorScheme.tertiary, MaterialTheme.colorScheme.secondary, MaterialTheme.colorScheme.primary)
+    val schoolDot = MaterialTheme.colorScheme.secondary
+    fun feedColor(id: String): Color = feedPalette[(feedColorIdx[id] ?: 0) % feedPalette.size]
     val dotsByDay = remember(icalOccurrences, psCourses) {
-        val map = mutableMapOf<LocalDate, Pair<Int, Int>>() // ical, ps-due
+        val map = mutableMapOf<LocalDate, MutableList<Color>>()
         for (o in icalOccurrences) {
-            val cur = map[o.date] ?: Pair(0, 0)
-            map[o.date] = Pair(cur.first + 1, cur.second)
+            map.getOrPut(o.date) { mutableListOf() }.add(feedColor(o.feedId))
         }
         for (a in PowerSchoolStore.distinctAssignments(psCourses)) {
             val d = a.dueIso?.let { psIsoToLocalDate(it) } ?: continue
-            val cur = map[d] ?: Pair(0, 0)
-            map[d] = Pair(cur.first, cur.second + 1)
+            map.getOrPut(d) { mutableListOf() }.add(schoolDot)
         }
         map
     }
-    val selectedAgenda = remember(selectedDay, icalOccurrences, psCourses) {
-        val ical = icalOccurrences.filter { it.date == selectedDay }
-        Pair(ical, PowerSchoolStore.dueOn(psCourses, selectedDay))
+    val selectedIcal = remember(selectedDay, icalOccurrences) {
+        icalOccurrences.filter { it.date == selectedDay }
+    }
+    val termCourses = remember(psCourses, selectedTerm) {
+        val t = selectedTerm
+        (if (t == null) psCourses else psCourses.filter { it.term == t }).sortedBy { it.name.lowercase() }
+    }
+    val gpa = remember(termCourses) { psCourseGpa(termCourses) }
+    val gpaDelta = remember(gradeHist) {
+        val gs = gradeHist.mapNotNull { it.gpa }
+        if (gs.size >= 2) gs.last() - gs[gs.size - 2] else null
+    }
+    val letterCounts = remember(termCourses) { psLetterCounts(termCourses) }
+    val movers = remember(psCourses, gradeHist, selectedTerm) {
+        val prev = gradeHist.dropLast(1).lastOrNull()?.percents ?: emptyMap()
+        val cur = if (selectedTerm == null) psCourses else psCourses.filter { it.term == selectedTerm }
+        psGradeMovers(prev, cur)
+    }
+    fun moverDate(courseId: String, term: String, current: Double): String? {
+        val key = "$courseId|$term"
+        var seen: Double? = null
+        var firstWithNew: String? = null
+        for (s in gradeHist) {
+            val v = s.percents[key]
+            if (v != null && v != seen) {
+                if (seen != null && v == current) firstWithNew = s.date
+                seen = v
+            }
+        }
+        return firstWithNew
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding()
-                .padding(horizontal = 18.dp, vertical = 18.dp),
-        ) {
-            // Header
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Houston", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                    Text(
-                        today.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = {
-                    context.startActivity(
-                        Intent(OverlayActivity.ACTION_OPEN_OVERLAY)
-                            .setClass(context, OverlayActivity::class.java),
-                    )
-                }) {
-                    Icon(Icons.Outlined.Search, "Open command bar", tint = MaterialTheme.colorScheme.primary)
-                }
-                IconButton(onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) }) {
-                    Icon(Icons.Outlined.Settings, "Houston settings", tint = MaterialTheme.colorScheme.primary)
-                }
-            }
-            UpdateCard(
-                state = updateState,
-                checking = checkingUpdate,
-                downloading = downloading,
-                progress = dlProgress,
-                onCheck = { checkForUpdates(silent = false) },
-                onDownload = { info ->
-                    if (downloading) return@UpdateCard
-                    scope.launch {
-                        downloading = true
-                        dlProgress = Pair(0L, -1L)
-                        try {
-                            val apk = withContext(Dispatchers.IO) {
-                                UpdateManager.download(context, info) { done, total ->
-                                    dlProgress = Pair(done, total)
-                                }
-                            }
-                            updateState = UpdateManager.CheckResult.Available(info, apk)
-                            if (!UpdateManager.canInstall(context)) {
-                                Toast.makeText(
-                                    context,
-                                    "Allow Houston to install apps, then tap Install.",
-                                    Toast.LENGTH_LONG,
-                                ).show()
-                                UpdateManager.openUnknownSourcesSettings(context)
-                            }
-                        } catch (e: Exception) {
-                            Toast.makeText(
-                                context,
-                                (e.message ?: "Download failed.").take(200),
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        } finally {
-                            downloading = false
-                            dlProgress = null
+        Column(Modifier.fillMaxSize()) {
+            Column(
+                Modifier.weight(1f).verticalScroll(scroll).navigationBarsPadding()
+                    .padding(horizontal = 18.dp, vertical = 18.dp),
+            ) {
+                // Header with material waves
+                Box(Modifier.fillMaxWidth()) {
+                    HeaderWaves(Modifier.fillMaxWidth().height(150.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        WaveformMark()
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Houston", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                            Text(
+                                today.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(OverlayActivity.ACTION_OPEN_OVERLAY)
+                                        .setClass(context, OverlayActivity::class.java),
+                                )
+                            },
+                            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f), CircleShape),
+                        ) {
+                            Icon(Icons.Outlined.Search, "Open command bar", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(
+                            onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) },
+                            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f), CircleShape),
+                        ) {
+                            Icon(Icons.Outlined.Settings, "Houston settings", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                },
-                onInstall = { apk ->
-                    runCatching { UpdateManager.install(context, apk) }.onFailure {
-                        Toast.makeText(context, "Couldn't open installer: ${it.message?.take(120)}", Toast.LENGTH_LONG).show()
-                    }
-                },
-            )
-            Spacer(Modifier.height(16.dp))
+                }
+                Spacer(Modifier.height(12.dp))
 
-            // Calendar
-            DashboardCalendarCard(
-                month = visibleMonth,
-                selectedDay = selectedDay,
-                today = today,
-                dots = dotsByDay,
-                onPrev = { visibleMonth = visibleMonth.minusMonths(1) },
-                onNext = { visibleMonth = visibleMonth.plusMonths(1) },
-                onToday = { visibleMonth = YearMonth.now(); selectedDay = LocalDate.now(); today = LocalDate.now() },
-                onSelect = { selectedDay = it },
-            )
-            Spacer(Modifier.height(12.dp))
-            AgendaCard(
-                day = selectedDay,
-                ical = selectedAgenda.first,
-                ps = selectedAgenda.second,
-                onOpenPs = { /* scroll handled below via term filter */ },
-            )
-            Spacer(Modifier.height(20.dp))
+                UpdateCard(
+                    state = updateState,
+                    checking = checkingUpdate,
+                    downloading = downloading,
+                    progress = dlProgress,
+                    onCheck = { checkForUpdates(silent = false) },
+                    onDownload = { info ->
+                        if (downloading) return@UpdateCard
+                        scope.launch {
+                            downloading = true
+                            dlProgress = Pair(0L, -1L)
+                            try {
+                                val apk = withContext(Dispatchers.IO) {
+                                    UpdateManager.download(context, info) { done, total -> dlProgress = Pair(done, total) }
+                                }
+                                updateState = UpdateManager.CheckResult.Available(info, apk)
+                                if (!UpdateManager.canInstall(context)) {
+                                    Toast.makeText(context, "Allow Houston to install apps, then tap Install.", Toast.LENGTH_LONG).show()
+                                    UpdateManager.openUnknownSourcesSettings(context)
+                                }
+                            } catch (e: Exception) {
+                                Toast.makeText(context, (e.message ?: "Download failed.").take(200), Toast.LENGTH_LONG).show()
+                            } finally {
+                                downloading = false
+                                dlProgress = null
+                            }
+                        }
+                    },
+                    onInstall = { apk ->
+                        runCatching { UpdateManager.install(context, apk) }.onFailure {
+                            Toast.makeText(context, "Couldn't open installer: ${it.message?.take(120)}", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                )
 
-            // iCal feeds
-            SectionHeader(Icons.Outlined.CalendarMonth, "Calendars")
-            Card(
-                Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                shape = RoundedCornerShape(26.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-            ) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
-                    if (feeds.isEmpty()) {
+                // Calendar
+                Box(Modifier.onGloballyPositioned { calendarY = it.positionInParent().y.toInt() }) {
+                    DashboardCalendarCard(
+                        month = visibleMonth,
+                        selectedDay = selectedDay,
+                        today = today,
+                        dots = dotsByDay,
+                        legend = remember(feeds, feedColorIdx) {
+                            feeds.map { it.name to feedPalette[(feedColorIdx[it.id] ?: 0) % feedPalette.size] } + listOf("School" to schoolDot)
+                        },
+                        onPrev = { visibleMonth = visibleMonth.minusMonths(1) },
+                        onNext = { visibleMonth = visibleMonth.plusMonths(1) },
+                        onToday = { visibleMonth = YearMonth.now(); selectedDay = LocalDate.now(); today = LocalDate.now() },
+                        onSelect = { selectedDay = it },
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+
+                YourDayBanner(
+                    day = selectedDay,
+                    wx = wx,
+                    onWeatherClick = { showLocation = true },
+                )
+                Spacer(Modifier.height(12.dp))
+
+                // Calendar events (selected day, iCal only)
+                SectionCard(
+                    icon = Icons.Outlined.CalendarMonth,
+                    title = "Calendar Events",
+                    onGlobalY = {},
+                ) {
+                    if (selectedIcal.isEmpty()) {
                         Text(
-                            "No calendars yet. Add an iCal link — e.g. a Google Calendar “Secret address in iCal format” — and school events appear above.",
+                            "Nothing on ${selectedDay.format(DateTimeFormatter.ofPattern("EEE, MMM d"))}.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    feeds.forEach { feed ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    selectedIcal.forEach { o ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (o.allDay) "All day"
+                                else if (o.startTime != null && o.endTime != null && o.startTime != o.endTime)
+                                    "${o.startTime.format(TIME_FMT)} – ${o.endTime.format(TIME_FMT)}"
+                                else o.startTime?.format(TIME_FMT) ?: o.feedName,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(14.dp))
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                            )
+                            Box(
+                                Modifier.padding(horizontal = 10.dp).width(4.dp).height(40.dp)
+                                    .clip(RoundedCornerShape(2.dp)).background(feedColor(o.feedId)),
+                            )
                             Column(Modifier.weight(1f)) {
-                                Text(feed.name, style = MaterialTheme.typography.bodyLarge)
-                                Text(
-                                    feed.lastError ?: feed.url.take(64),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (feed.lastError != null) MaterialTheme.colorScheme.error
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                feed.lastSync?.let {
-                                    Text(
-                                        "Synced ${it.take(10)}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            if (syncingFeeds) {
-                                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                            } else {
-                                IconButton(onClick = {
-                                    scope.launch {
-                                        syncingFeeds = true
-                                        try {
-                                            withContext(Dispatchers.IO) { ICalStore.refresh(context, feed) }
-                                        } finally {
-                                            reloadFeeds(); syncingFeeds = false
-                                        }
+                                Text(o.summary, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                o.location?.takeIf { it.isNotBlank() }?.let {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Outlined.Place, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
+                                        Spacer(Modifier.width(3.dp))
+                                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
-                                }) {
-                                    Icon(Icons.Outlined.Sync, "Sync ${feed.name}", tint = MaterialTheme.colorScheme.primary)
                                 }
-                                IconButton(onClick = { ICalStore.remove(context, feed.id); reloadFeeds() }) {
-                                    Icon(Icons.Outlined.Delete, "Remove ${feed.name}", tint = MaterialTheme.colorScheme.error)
-                                }
+                                Text(o.feedName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
+                            Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { showAddFeed = true }, Modifier.weight(1f)) {
-                            Icon(Icons.Outlined.Add, null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Add iCal link")
-                        }
-                        OutlinedButton(
-                            onClick = { refreshAllFeeds() },
-                            enabled = feeds.isNotEmpty() && !syncingFeeds,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Sync all")
-                        }
-                    }
-                    Text(
-                        "Only UNTIL/COUNT daily and weekly repeats expand; monthly rules and time-zone files are skipped.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 8.dp),
+                }
+                Spacer(Modifier.height(12.dp))
+
+                // School
+                Box(Modifier.onGloballyPositioned { schoolY = it.positionInParent().y.toInt() }) {
+                    SchoolCard(
+                        psUi = psUi,
+                        progress = psProgress,
+                        courses = termCourses,
+                        allCourses = psCourses,
+                        refreshedAt = psRefreshedAt,
+                        username = psUser,
+                        password = psPassword,
+                        server = psServer,
+                        showPassword = psShowPassword,
+                        selectedTerm = selectedTerm,
+                        terms = remember(psCourses) { psCourseTerms(psCourses) },
+                        gpa = gpa,
+                        gpaDelta = gpaDelta,
+                        letterCounts = letterCounts,
+                        movers = movers,
+                        moverDate = { m -> moverDate(m.courseId, selectedTerm ?: termCourses.firstOrNull { it.id == m.courseId }?.term.orEmpty(), m.newPercent) },
+                        gradeHistSize = gradeHist.size,
+                        expanded = schoolExpanded,
+                        onToggleExpanded = { schoolExpanded = !schoolExpanded },
+                        onUsername = { psUser = it },
+                        onPassword = { psPassword = it },
+                        onServer = { psServer = it },
+                        onTogglePassword = { psShowPassword = !psShowPassword },
+                        onTerm = {
+                            selectedTerm = it
+                            PowerSchoolStore.setSelectedTerm(context, it)
+                        },
+                        onSignIn = {
+                            PowerSchoolStore.setBaseUrl(context, psServer.ifBlank { PS_DEFAULT_BASE_URL })
+                            doPsRefresh(psUser.trim().ifEmpty { null }, psPassword.ifEmpty { null })
+                        },
+                        onRefresh = { doPsRefresh(null, null) },
+                        onSignOut = {
+                            PowerSchoolStore.clearAccount(context)
+                            psCourses = emptyList()
+                            psPassword = ""
+                            psUser = ""
+                            selectedTerm = null
+                            gradeHist = emptyList()
+                            psUi = PsUi.SignedOut
+                        },
                     )
                 }
-            }
-            Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(12.dp))
 
-            // PowerSchool
-            SectionHeader(Icons.Outlined.School, "School")
-            PowerSchoolCard(
-                psUi = psUi,
-                progress = psProgress,
-                courses = psCourses,
-                refreshedAt = psRefreshedAt,
-                username = psUser,
-                password = psPassword,
-                server = psServer,
-                showPassword = psShowPassword,
-                selectedTerm = selectedTerm,
-                onUsername = { psUser = it },
-                onPassword = { psPassword = it },
-                onServer = { psServer = it },
-                onTogglePassword = { psShowPassword = !psShowPassword },
-                onTerm = {
-                    selectedTerm = it
-                    PowerSchoolStore.setSelectedTerm(context, it)
-                },
-                onSignIn = {
-                    PowerSchoolStore.setBaseUrl(context, psServer.ifBlank { PS_DEFAULT_BASE_URL })
-                    doPsRefresh(psUser.trim().ifEmpty { null }, psPassword.ifEmpty { null })
-                },
-                onRefresh = { doPsRefresh(null, null) },
-                onSignOut = {
-                    PowerSchoolStore.clearAccount(context)
-                    psCourses = emptyList()
-                    psPassword = ""
-                    psUser = ""
-                    selectedTerm = null
-                    psUi = PsUi.SignedOut
-                },
-            )
-            Spacer(Modifier.height(20.dp))
-            SectionHeader(Icons.Outlined.Shield, "Permissions")
-            PermissionsCard()
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "PowerSchool signs in directly over HTTPS and keeps only session cookies on this phone — the password is never stored. Official grades shown are the portal's own; assignment averages are never presented as grades.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val versionName = try {
-                    context.packageManager.getPackageInfo(context.packageName, 0).versionName
-                } catch (_: Exception) {
-                    null
+                // Swimming (local training log)
+                SwimCard(
+                    state = swim,
+                    onEditTargets = { showSwimTargets = true },
+                    onAddEntry = { showSwimLog = true },
+                    onDeleteEntry = {
+                        SwimStore.removeEntry(context, it)
+                        swim = SwimStore.load(context)
+                    },
+                    expanded = swimExpanded,
+                    onToggleExpanded = { swimExpanded = !swimExpanded },
+                )
+                Spacer(Modifier.height(16.dp))
+
+                // iCal feeds
+                SectionHeader(Icons.Outlined.CalendarMonth, "Calendars")
+                Card(
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(26.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
+                        if (feeds.isEmpty()) {
+                            Text(
+                                "No calendars yet. Add an iCal link — e.g. a Google Calendar “Secret address in iCal format” — and events appear above.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        feeds.forEach { feed ->
+                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(10.dp).clip(CircleShape).background(feedColor(feed.id)))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(feed.name, style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        feed.lastError ?: feed.url.take(64),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (feed.lastError != null) MaterialTheme.colorScheme.error
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    )
+                                    feed.lastSync?.let {
+                                        Text("Synced ${it.take(10)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                if (syncingFeeds) {
+                                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                                } else {
+                                    IconButton(onClick = {
+                                        scope.launch {
+                                            syncingFeeds = true
+                                            try {
+                                                withContext(Dispatchers.IO) { ICalStore.refresh(context, feed) }
+                                            } finally {
+                                                reloadFeeds(); syncingFeeds = false
+                                            }
+                                        }
+                                    }) {
+                                        Icon(Icons.Outlined.Sync, "Sync ${feed.name}", tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                    IconButton(onClick = { ICalStore.remove(context, feed.id); reloadFeeds() }) {
+                                        Icon(Icons.Outlined.Delete, "Remove ${feed.name}", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { showAddFeed = true }, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Outlined.Add, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Add iCal link")
+                            }
+                            OutlinedButton(onClick = { refreshAllFeeds() }, enabled = feeds.isNotEmpty() && !syncingFeeds, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Sync all")
+                            }
+                        }
+                        Text(
+                            "Only UNTIL/COUNT daily and weekly repeats expand; monthly rules and time-zone files are skipped.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
                 }
+                Spacer(Modifier.height(16.dp))
+
+                SectionHeader(Icons.Outlined.Shield, "Permissions")
+                PermissionsCard(notifProbe = notifProbe, onRecheck = { notifProbe++ })
+                Spacer(Modifier.height(12.dp))
                 Text(
-                    "Houston ${versionName ?: ""}".trim(),
+                    "PowerSchool signs in directly over HTTPS and keeps only session cookies on this phone — the password is never stored. Official grades shown are the portal's own; assignment averages are never presented as grades.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp),
                 )
-                TextButton(onClick = { checkForUpdates(silent = false) }, enabled = !checkingUpdate) {
-                    Text(if (checkingUpdate) "Checking…" else "Check for updates")
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val versionName = try {
+                        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                    } catch (_: Exception) {
+                        null
+                    }
+                    Text(
+                        "Houston ${versionName ?: ""}".trim(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { checkForUpdates(silent = false) }, enabled = !checkingUpdate) {
+                        Text(if (checkingUpdate) "Checking…" else "Check for updates")
+                    }
                 }
             }
+            // Bottom nav
+            DashBottomBar(
+                tab = tab,
+                onTab = {
+                    tab = it
+                    when (it) {
+                        DashTab.HOME -> scrollTo(0)
+                        DashTab.CALENDAR -> scrollTo(calendarY)
+                        DashTab.SCHOOL -> scrollTo(schoolY)
+                        DashTab.SETTINGS -> context.startActivity(Intent(context, SettingsActivity::class.java))
+                    }
+                },
+            )
         }
     }
 
@@ -571,9 +748,110 @@ private fun DashboardScreen() {
             dismissButton = { TextButton(onClick = { showAddFeed = false }) { Text("Cancel") } },
         )
     }
-}
 
-private const val AGENDaExtra: Long = AGENDA_WINDOW_DAYS
+    if (showLocation) {
+        var lat by remember { mutableStateOf(WeatherStore.lat(context).toString()) }
+        var lon by remember { mutableStateOf(WeatherStore.lon(context).toString()) }
+        var error by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { showLocation = false },
+            title = { Text("Weather location") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Latitude and longitude for the forecast. Defaults to Louisville, KY.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(lat, { lat = it; error = null }, label = { Text("Latitude") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(lon, { lon = it; error = null }, label = { Text("Longitude") }, modifier = Modifier.fillMaxWidth())
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val la = lat.toDoubleOrNull()
+                    val lo = lon.toDoubleOrNull()
+                    if (la == null || lo == null || la !in -90.0..90.0 || lo !in -180.0..180.0) {
+                        error = "Enter a valid latitude (-90…90) and longitude (-180…180)."
+                    } else {
+                        WeatherStore.setLocation(context, la, lo)
+                        showLocation = false
+                        scope.launch {
+                            withContext(Dispatchers.IO) { WeatherStore.refresh(context) }?.let { wx = it }
+                        }
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { showLocation = false }) { Text("Cancel") } },
+        )
+    }
+
+    if (showSwimTargets) {
+        var eventName by remember { mutableStateOf(swim.eventName) }
+        var start by remember { mutableStateOf(swim.baselineSec?.let { formatSwimTime(it) } ?: "") }
+        var best by remember { mutableStateOf(swim.bestSec?.let { formatSwimTime(it) } ?: "") }
+        var goal by remember { mutableStateOf(swim.goalSec?.let { formatSwimTime(it) } ?: "") }
+        var error by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { showSwimTargets = false },
+            title = { Text("Swim targets") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(eventName, { eventName = it }, label = { Text("Event (e.g. 100 Breast – SCY)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(start, { start = it; error = null }, label = { Text("Season start (m:ss.cc)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(best, { best = it; error = null }, label = { Text("Current best (m:ss.cc)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(goal, { goal = it; error = null }, label = { Text("Goal (m:ss.cc)") }, modifier = Modifier.fillMaxWidth())
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val s = if (start.isBlank()) null else parseSwimTime(start)
+                    val b = if (best.isBlank()) null else parseSwimTime(best)
+                    val g = if (goal.isBlank()) null else parseSwimTime(goal)
+                    if ((start.isNotBlank() && s == null) || (best.isNotBlank() && b == null) || (goal.isNotBlank() && g == null)) {
+                        error = "Times look like 1:08.20 or 68.20."
+                    } else {
+                        SwimStore.saveTargets(context, eventName.ifBlank { "Swim" }, s, b, g)
+                        swim = SwimStore.load(context)
+                        showSwimTargets = false
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { showSwimTargets = false }) { Text("Cancel") } },
+        )
+    }
+
+    if (showSwimLog) {
+        var title by remember { mutableStateOf("") }
+        var detail by remember { mutableStateOf("") }
+        var date by remember { mutableStateOf(LocalDate.now().toString()) }
+        var error by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { showSwimLog = false },
+            title = { Text("Log practice") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(title, { title = it; error = null }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(detail, { detail = it }, label = { Text("Detail (e.g. 6,800 yd · Endurance)") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(date, { date = it; error = null }, label = { Text("Date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (title.isBlank()) {
+                        error = "Give the entry a title."
+                    } else if (psIsoToLocalDate(date) == null) {
+                        error = "Date must look like 2026-11-14."
+                    } else {
+                        SwimStore.addEntry(context, date, title, detail.ifBlank { null })
+                        swim = SwimStore.load(context)
+                        showSwimLog = false
+                    }
+                }) { Text("Log") }
+            },
+            dismissButton = { TextButton(onClick = { showSwimLog = false }) { Text("Cancel") } },
+        )
+    }
+}
 
 private fun psUserMessage(e: PsException): String = when (e) {
     is PsException.InvalidCredentials -> "PowerSchool rejected the username or password."
@@ -584,8 +862,273 @@ private fun psUserMessage(e: PsException): String = when (e) {
     is PsException.Network -> "Network trouble talking to PowerSchool${e.status?.let { " (HTTP $it)" } ?: ""}."
 }
 
+private fun relDayLabel(day: LocalDate, today: LocalDate = LocalDate.now()): String = when (day) {
+    today -> "Today"
+    today.plusDays(1) -> "Tomorrow"
+    today.minusDays(1) -> "Yesterday"
+    else -> day.format(DateTimeFormatter.ofPattern("EEE, MMM d"))
+}
+
+// ---------- Header art (dynamic color, never fixed purple) ----------
+
 @Composable
-private fun SectionHeader(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String) {
+private fun HeaderWaves(modifier: Modifier = Modifier) {
+    val primary = MaterialTheme.colorScheme.primary
+    val tertiary = MaterialTheme.colorScheme.tertiary
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        drawPath(
+            Path().apply {
+                moveTo(w * 0.42f, 0f)
+                cubicTo(w * 0.62f, h * 0.25f, w * 0.55f, h * 0.55f, w * 0.78f, h * 0.72f)
+                cubicTo(w * 0.95f, h * 0.85f, w * 0.98f, h, w, h)
+                lineTo(w, 0f)
+                close()
+            },
+            color = primary.copy(alpha = .16f),
+        )
+        drawPath(
+            Path().apply {
+                moveTo(w * 0.66f, 0f)
+                cubicTo(w * 0.8f, h * 0.3f, w * 0.78f, h * 0.6f, w, h * 0.82f)
+                lineTo(w, 0f)
+                close()
+            },
+            color = tertiary.copy(alpha = .20f),
+        )
+        drawPath(
+            Path().apply {
+                moveTo(w * 0.88f, 0f)
+                cubicTo(w * 0.94f, h * 0.35f, w * 0.93f, h * 0.6f, w, h)
+                lineTo(w, 0f)
+                close()
+            },
+            color = primary.copy(alpha = .22f),
+        )
+    }
+}
+
+@Composable
+private fun WaveformMark(modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    val bars = listOf(0.35f, 0.7f, 1f, 0.6f, 0.85f)
+    val cols = listOf(scheme.primary, scheme.tertiary, scheme.secondary, scheme.tertiary, scheme.primary)
+    Canvas(modifier.size(34.dp, 30.dp)) {
+        val bw = size.width / (bars.size * 2f)
+        bars.forEachIndexed { i, f ->
+            val h = size.height * f
+            drawRoundRect(
+                color = cols[i % cols.size],
+                topLeft = Offset(i * 2 * bw + bw * 0.25f, (size.height - h) / 2),
+                size = androidx.compose.ui.geometry.Size(bw, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(bw / 2, bw / 2),
+            )
+        }
+    }
+}
+
+// ---------- Calendar ----------
+
+@Composable
+private fun DashboardCalendarCard(
+    month: YearMonth,
+    selectedDay: LocalDate,
+    today: LocalDate,
+    dots: Map<LocalDate, List<Color>>,
+    legend: List<Pair<String, Color>>,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onToday: () -> Unit,
+    onSelect: (LocalDate) -> Unit,
+) {
+    val first = month.atDay(1)
+    val leading = first.dayOfWeek.value % 7 // Sunday-first
+    val cells = List(leading) { null } + (1..month.lengthOfMonth()).map(month::atDay)
+    val padded = cells + List((7 - cells.size % 7) % 7) { null }
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onPrev) { Text("‹", fontSize = 22.sp) }
+                Text(
+                    month.format(MONTH_TITLE),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                )
+                TextButton(onClick = onNext) { Text("›", fontSize = 22.sp) }
+                Button(
+                    onClick = onToday,
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                ) { Text("Today", fontSize = 13.sp) }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 2.dp)) {
+                listOf("S", "M", "T", "W", "T", "F", "S").forEach { d ->
+                    Text(
+                        d, modifier = Modifier.weight(1f).padding(vertical = 5.dp),
+                        textAlign = TextAlign.Center, fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            padded.chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth()) {
+                    week.forEach { date ->
+                        val selected = date == selectedDay
+                        val isToday = date != null && date == today
+                        val dayDots = date?.let { dots[it] }.orEmpty().take(3)
+                        Box(
+                            Modifier.weight(1f).height(46.dp)
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(
+                                    when {
+                                        isToday -> MaterialTheme.colorScheme.primaryContainer
+                                        selected -> MaterialTheme.colorScheme.primary.copy(alpha = .18f)
+                                        else -> Color.Transparent
+                                    },
+                                )
+                                .border(
+                                    if (selected && !isToday) 1.dp else 0.dp,
+                                    MaterialTheme.colorScheme.primary,
+                                    RoundedCornerShape(13.dp),
+                                )
+                                .then(if (date != null) Modifier.clickable { onSelect(date) } else Modifier),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (date != null) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        date.dayOfMonth.toString(),
+                                        fontSize = 13.sp,
+                                        fontWeight = if (selected || isToday) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isToday) MaterialTheme.colorScheme.onPrimaryContainer
+                                        else MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.height(6.dp)) {
+                                        dayDots.forEach { c ->
+                                            Box(Modifier.size(4.dp).clip(CircleShape).background(c))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (legend.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    legend.take(4).forEachIndexed { i, (name, color) ->
+                        if (i > 0) Spacer(Modifier.width(14.dp))
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+                        Spacer(Modifier.width(5.dp))
+                        Text(name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------- Your Day banner + weather ----------
+
+@Composable
+private fun YourDayBanner(day: LocalDate, wx: WxToday?, onWeatherClick: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Outlined.AutoAwesome, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(30.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Your Day", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Text(
+                    day.format(DateTimeFormatter.ofPattern("EEE, MMM d")),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+            Row(Modifier.clickable(onClick = onWeatherClick), verticalAlignment = Alignment.CenterVertically) {
+                WxIcon(wx?.code)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (wx != null) "${wx.hiF.toInt()}° / ${wx.loF.toInt()}°F" else "—",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WxIcon(code: Int?) {
+    val tint = MaterialTheme.colorScheme.onPrimaryContainer
+    val icon = when (wxKind(code ?: 3)) {
+        "sunny" -> Icons.Outlined.WbSunny
+        "rain", "drizzle" -> Icons.Outlined.WaterDrop
+        "snow" -> Icons.Outlined.AcUnit
+        "storm" -> Icons.Outlined.Thunderstorm
+        else -> Icons.Outlined.Cloud
+    }
+    Icon(icon, "Weather", tint = tint, modifier = Modifier.size(34.dp))
+}
+
+// ---------- Generic section card ----------
+
+@Composable
+private fun SectionCard(
+    icon: ImageVector,
+    title: String,
+    viewAllLabel: String? = null,
+    onViewAll: (() -> Unit)? = null,
+    onGlobalY: (Int) -> Unit = {},
+    content: @Composable () -> Unit,
+) {
+    Card(
+        Modifier.fillMaxWidth().onGloballyPositioned { onGlobalY(it.positionInParent().y.toInt()) },
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                if (viewAllLabel != null && onViewAll != null) {
+                    OutlinedButton(
+                        onClick = onViewAll,
+                        shape = RoundedCornerShape(16.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    ) {
+                        Text(viewAllLabel, fontSize = 13.sp)
+                        Icon(Icons.Outlined.ChevronRight, null, modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(icon: ImageVector, title: String) {
     Row(Modifier.padding(start = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
         Text(
@@ -596,189 +1139,30 @@ private fun SectionHeader(icon: androidx.compose.ui.graphics.vector.ImageVector,
     Spacer(Modifier.height(2.dp))
 }
 
-@Composable
-private fun DashboardCalendarCard(
-    month: YearMonth,
-    selectedDay: LocalDate,
-    today: LocalDate,
-    dots: Map<LocalDate, Pair<Int, Int>>,
-    onPrev: () -> Unit,
-    onNext: () -> Unit,
-    onToday: () -> Unit,
-    onSelect: (LocalDate) -> Unit,
-) {
-    val first = month.atDay(1)
-    val leading = first.dayOfWeek.value - 1 // Monday-first
-    val cells = List(leading) { null } + (1..month.lengthOfMonth()).map(month::atDay)
-    val padded = cells + List((7 - cells.size % 7) % 7) { null }
-    Card(
-        Modifier.fillMaxWidth().padding(bottom = 8.dp),
-        shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onPrev) { Text("‹", fontSize = 20.sp) }
-                Text(
-                    month.format(MONTH_TITLE),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
-                )
-                TextButton(onClick = onNext) { Text("›", fontSize = 20.sp) }
-                TextButton(onClick = onToday) { Text("Today", fontSize = 12.sp) }
-            }
-            Row(Modifier.fillMaxWidth()) {
-                listOf("M", "T", "W", "T", "F", "S", "S").forEach { d ->
-                    Text(
-                        d, modifier = Modifier.weight(1f).padding(vertical = 3.dp),
-                        textAlign = TextAlign.Center, fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            padded.chunked(7).forEach { week ->
-                Row(Modifier.fillMaxWidth()) {
-                    week.forEach { date ->
-                        val selected = date == selectedDay
-                        val isToday = date == today
-                        val dot = date?.let { dots[it] }
-                        Box(
-                            Modifier.weight(1f).height(38.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .28f)
-                                    else Color.Transparent,
-                                )
-                                .border(
-                                    if (selected || isToday) 1.dp else 0.dp,
-                                    if (selected) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.outline,
-                                    RoundedCornerShape(10.dp),
-                                )
-                                .then(if (date != null) Modifier.clickable { onSelect(date) } else Modifier),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (date != null) {
-                                Text(
-                                    date.dayOfMonth.toString(),
-                                    fontSize = 12.sp,
-                                    fontWeight = if (selected || isToday) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (selected) MaterialTheme.colorScheme.onSurface
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (dot != null && (dot.first > 0 || dot.second > 0)) {
-                                    Row(
-                                        Modifier.align(Alignment.BottomCenter).padding(bottom = 3.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                    ) {
-                                        if (dot.first > 0) Box(Modifier.size(4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiary))
-                                        if (dot.second > 0) Box(Modifier.size(4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Text(
-                "Teal dot = calendar event · red dot = assignment due",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, start = 4.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun AgendaCard(
-    day: LocalDate,
-    ical: List<ICalOccurrence>,
-    ps: List<PsAssignment>,
-    onOpenPs: () -> Unit,
-) {
-    Card(
-        Modifier.fillMaxWidth().padding(bottom = 8.dp),
-        shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
-            Text(day.format(DAY_HEADER), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            if (ical.isEmpty() && ps.isEmpty()) {
-                Text(
-                    "Nothing on this day.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            ical.forEach { o ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiary))
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(o.summary, style = MaterialTheme.typography.bodyLarge)
-                        val when_ = when {
-                            o.allDay -> "All day · ${o.feedName}"
-                            o.startTime != null && o.endTime != null && o.startTime != o.endTime ->
-                                "${o.startTime.format(TIME_FMT)} – ${o.endTime.format(TIME_FMT)} · ${o.feedName}"
-                            o.startTime != null -> "${o.startTime.format(TIME_FMT)} · ${o.feedName}"
-                            else -> o.feedName
-                        }
-                        Text(when_, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        o.location?.takeIf { it.isNotBlank() }?.let {
-                            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            }
-            ps.forEach { a ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(8.dp).clip(CircleShape)
-                            .background(if (a.status == "missing") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(a.name ?: "Assignment", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            buildString {
-                                append(a.courseName)
-                                a.category?.let { append(" · $it") }
-                                val s = psScoreText(a)
-                                if (s.isNotEmpty()) append(" · $s")
-                                else if (a.percent != null) append(" · ${a.percent}%")
-                                if (a.letter != null) append(" ${a.letter}")
-                                if (a.status == "missing") append(" · MISSING")
-                                else if (a.status == "late") append(" · late")
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (a.status == "missing") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            if (ps.isNotEmpty()) {
-                TextButton(onClick = onOpenPs) { Text("See all in School below") }
-            }
-        }
-    }
-}
+// ---------- School ----------
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PowerSchoolCard(
+private fun SchoolCard(
     psUi: PsUi,
     progress: String,
     courses: List<PsCourse>,
+    allCourses: List<PsCourse>,
     refreshedAt: String?,
     username: String,
     password: String,
     server: String,
     showPassword: Boolean,
     selectedTerm: String?,
+    terms: List<String>,
+    gpa: Double?,
+    gpaDelta: Double?,
+    letterCounts: List<Pair<String, Int>>,
+    movers: List<PsGradeMove>,
+    moverDate: (PsGradeMove) -> String?,
+    gradeHistSize: Int,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
     onUsername: (String) -> Unit,
     onPassword: (String) -> Unit,
     onServer: (String) -> Unit,
@@ -788,61 +1172,122 @@ private fun PowerSchoolCard(
     onRefresh: () -> Unit,
     onSignOut: () -> Unit,
 ) {
-    Card(
-        Modifier.fillMaxWidth().padding(bottom = 8.dp),
-        shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)) {
-            when (psUi) {
-                is PsUi.SignedOut -> {
-                    Text("Connect PowerSchool", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Guardian sign-in for grades and assignments. Only session cookies stay on this phone.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                    OutlinedTextField(username, onUsername, label = { Text("Parent username") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(
-                        password, onPassword, label = { Text("Password (never stored)") },
-                        visualTransformation = if (showPassword) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(server, onServer, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = onTogglePassword) { Text(if (showPassword) "Hide password" else "Show password") }
-                        Button(onClick = onSignIn, enabled = username.isNotBlank() && password.isNotEmpty()) { Text("Sign in & sync") }
-                    }
+    when (psUi) {
+        is PsUi.SignedOut -> SectionCard(icon = Icons.Outlined.School, title = "School") {
+            Text("Connect PowerSchool", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "Guardian sign-in for grades and assignments. Only session cookies stay on this phone.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+            OutlinedTextField(username, onUsername, label = { Text("Parent username") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                password, onPassword, label = { Text("Password (never stored)") },
+                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(server, onServer, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onTogglePassword) { Text(if (showPassword) "Hide password" else "Show password") }
+                Button(onClick = onSignIn, enabled = username.isNotBlank() && password.isNotEmpty()) { Text("Sign in & sync") }
+            }
+        }
+        is PsUi.SigningIn -> SectionCard(icon = Icons.Outlined.School, title = "School") {
+            Text(psUi.note.ifEmpty { "Working…" }, style = MaterialTheme.typography.bodyLarge)
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (progress.isNotEmpty()) {
+                Text(progress, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        is PsUi.Ready, is PsUi.Failure -> {
+            val err = (psUi as? PsUi.Failure)?.message
+            SectionCard(
+                icon = Icons.Outlined.School,
+                title = "School",
+                viewAllLabel = "View All",
+                onViewAll = onToggleExpanded,
+            ) {
+                if (err != null) {
+                    Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(6.dp))
                 }
-                is PsUi.SigningIn -> {
-                    Text(psUi.note.ifEmpty { "Working…" }, style = MaterialTheme.typography.bodyLarge)
-                    Spacer(Modifier.height(8.dp))
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    if (progress.isNotEmpty()) {
-                        Text(progress, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                is PsUi.Ready -> {
-                    PsGradesBody(
-                        courses = courses, selectedTerm = selectedTerm, refreshedAt = refreshedAt,
-                        syncing = false, onTerm = onTerm, onRefresh = onRefresh, onSignOut = onSignOut,
-                    )
-                }
-                is PsUi.Failure -> {
-                    Text(psUi.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.height(8.dp))
-                    if (psUi.cached.isNotEmpty()) {
-                        PsGradesBody(
-                            courses = courses.ifEmpty { psUi.cached }, selectedTerm = selectedTerm,
-                            refreshedAt = refreshedAt, syncing = false, onTerm = onTerm,
-                            onRefresh = onRefresh, onSignOut = onSignOut,
-                        )
-                    } else {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = onRefresh) { Text("Retry") }
-                            TextButton(onClick = onSignOut) { Text("Sign out") }
+                // GPA + classes
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("GPA", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                gpa?.let { "%.2f".format(it) } ?: "—",
+                                style = MaterialTheme.typography.displaySmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            if (gpaDelta != null && kotlin.math.abs(gpaDelta) >= 0.005) {
+                                val up = gpaDelta > 0
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        if (up) Icons.AutoMirrored.Outlined.TrendingUp else Icons.AutoMirrored.Outlined.TrendingDown,
+                                        null,
+                                        tint = if (up) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Spacer(Modifier.width(3.dp))
+                                    Text(
+                                        (if (up) "+" else "") + "%.2f".format(gpaDelta),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (up) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
                         }
+                    }
+                    Box(Modifier.width(1.dp).height(52.dp).background(MaterialTheme.colorScheme.outlineVariant).align(Alignment.CenterVertically))
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Classes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(courses.size.toString(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(8.dp))
+                            letterCounts.forEach { (letter, n) ->
+                                val c = gradeColor(letter)
+                                Text(
+                                    "$n ${letter}'s",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = c,
+                                    modifier = Modifier.background(c.copy(alpha = .16f), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                        }
+                    }
+                }
+                if (terms.size > 1) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        terms.forEach { t ->
+                            FilterChip(selected = t == selectedTerm, onClick = { onTerm(t) }, label = { Text(t) })
+                        }
+                    }
+                }
+                if (courses.isEmpty()) {
+                    Text("No courses for this term yet — refresh to sync.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // Movers + next upcoming
+                val shown = remember(courses) { courses }
+                MoverRows(courses = shown, movers = movers, moverDate = moverDate, expanded = expanded, allCourses = allCourses)
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    refreshedAt?.take(10)?.let {
+                        Text("Synced $it · portal grades", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } ?: Spacer(Modifier.weight(1f))
+                    Row {
+                        IconButton(onClick = onRefresh) {
+                            Icon(Icons.Outlined.Refresh, "Refresh PowerSchool", tint = MaterialTheme.colorScheme.primary)
+                        }
+                        TextButton(onClick = onSignOut) { Text("Sign out") }
                     }
                 }
             }
@@ -851,125 +1296,194 @@ private fun PowerSchoolCard(
 }
 
 @Composable
-private fun PsGradesBody(
+private fun MoverRows(
     courses: List<PsCourse>,
-    selectedTerm: String?,
-    refreshedAt: String?,
-    syncing: Boolean,
-    onTerm: (String) -> Unit,
-    onRefresh: () -> Unit,
-    onSignOut: () -> Unit,
+    movers: List<PsGradeMove>,
+    moverDate: (PsGradeMove) -> String?,
+    expanded: Boolean,
+    allCourses: List<PsCourse>,
 ) {
-    val terms = remember(courses) { psCourseTerms(courses) }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("Grades", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        if (syncing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-        else IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Refresh PowerSchool", tint = MaterialTheme.colorScheme.primary) }
+    val today = LocalDate.now()
+    fun moverSubtitle(m: PsGradeMove): String {
+        fun pct(v: Double) = if (v % 1.0 == 0.0) v.toInt().toString() else "%.1f".format(v)
+        return if (m.delta < 0) "Dropped ${(-m.delta).let { if (it % 1.0 == 0.0) it.toInt().toString() else "%.1f".format(it) }}% (${pct(m.oldPercent)} → ${pct(m.newPercent)})"
+        else "+${if (m.delta % 1.0 == 0.0) m.delta.toInt().toString() else "%.1f".format(m.delta)}% (${pct(m.oldPercent)} → ${pct(m.newPercent)})"
     }
-    refreshedAt?.take(10)?.let {
-        Text("Synced $it · official portal grades", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    if (terms.size > 1) {
-        @OptIn(ExperimentalMaterial3Api::class)
-        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            terms.forEach { t ->
-                FilterChip(selected = t == selectedTerm, onClick = { onTerm(t) }, label = { Text(t) })
-            }
-        }
-    }
-    val shown = remember(courses, selectedTerm) {
-        val t = selectedTerm
-        (if (t == null) courses else courses.filter { it.term == t }).sortedBy { it.name.lowercase() }
-    }
-    if (shown.isEmpty()) {
-        Text("No courses for this term yet — refresh to sync.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    shown.forEach { c ->
-        Card(
-            Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        ) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(c.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                    val sub = listOfNotNull(c.teacher, c.expression).joinToString(" · ")
-                    if (sub.isNotEmpty()) {
-                        Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    val counts = c.assignments.groupingBy { it.status }.eachCount()
-                    val missing = counts["missing"] ?: 0
-                    if (missing > 0) {
-                        Text(
-                            "$missing missing",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        c.gradeLetter ?: "—",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = if (c.gradeLetter == null) MaterialTheme.colorScheme.onSurfaceVariant
-                        else gradeColor(c.gradeLetter),
-                    )
-                    c.gradePercent?.let {
-                        Text(
-                            "${if (it % 1.0 == 0.0) it.toInt().toString() else "%.1f".format(it)}%",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-    }
-    Spacer(Modifier.height(8.dp))
-    Text("Needs attention", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    val attention = remember(courses, selectedTerm) {
-        PowerSchoolStore.distinctAssignments(courses.filter { selectedTerm == null || it.term == selectedTerm })
-            .filter { a -> a.status == "missing" || a.status == "late" || a.status == "ungraded" }
-            .sortedWith(compareBy({ a: PsAssignment -> if (a.status == "missing") 0 else 1 }, { it.dueIso ?: "9999" }))
-            .take(12)
-    }
-    if (attention.isEmpty()) {
-        Text("All clear — nothing missing or late.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    attention.forEach { a ->
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    for (m in movers) {
+        val down = m.delta < 0
+        val dateLabel = moverDate(m)?.let { runCatching { LocalDate.parse(it) }.getOrNull()?.let { d -> relDayLabel(d, today) } } ?: "Recently"
+        Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
-                Modifier.size(8.dp).clip(CircleShape)
-                    .background(if (a.status == "missing") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary),
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(a.name ?: "Assignment", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    buildString {
-                        append(a.courseName)
-                        a.dueMdy?.let { append(" · due $it") }
-                        val s = psScoreText(a)
-                        if (s.isNotEmpty()) append(" · $s") else append(" · ${a.status}")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (a.status == "missing") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
+                    .background(if (down) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (down) Icons.AutoMirrored.Outlined.TrendingDown else Icons.AutoMirrored.Outlined.TrendingUp,
+                    null,
+                    tint = if (down) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(18.dp),
                 )
             }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                val courseName = courses.firstOrNull { it.id == m.courseId }?.name ?: m.courseName
+                val letter = courses.firstOrNull { it.id == m.courseId }?.gradeLetter
+                Text(
+                    "$courseName${letter?.let { " — $it" } ?: ""}",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(moverSubtitle(m), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(dateLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
-    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
-        TextButton(onClick = onSignOut) { Text("Sign out") }
+    val nextUp = remember(allCourses) {
+        PowerSchoolStore.upcoming(allCourses, today, 30)
+            .filter { it.status != "missing" }
+            .take(if (expanded) 40 else 2)
+    }
+    for (a in nextUp) {
+        val due = a.dueIso?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.Event, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    (a.name ?: "Assignment") + " (${a.courseName})",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "Due ${due?.format(DateTimeFormatter.ofPattern("EEE, MMM d")) ?: (a.dueMdy ?: "undated")}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text("Upcoming", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    if (movers.isEmpty() && nextUp.isEmpty()) {
+        Text("All clear — nothing moving and nothing due.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
-private fun psScoreText(a: PsAssignment): String {
-    val e = a.earned ?: return ""
-    val p = a.possible ?: return ""
-    fun fmt(v: Double) = if (v % 1.0 == 0.0) v.toInt().toString() else v.toString()
-    return "${fmt(e)}/${fmt(p)}"
+// ---------- Swimming (local log) ----------
+
+@Composable
+private fun SwimCard(
+    state: SwimState,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onEditTargets: () -> Unit,
+    onAddEntry: () -> Unit,
+    onDeleteEntry: (String) -> Unit,
+) {
+    val progress = swimProgressPct(state.baselineSec, state.bestSec, state.goalSec)
+    SectionCard(icon = Icons.Outlined.Waves, title = "Swimming", viewAllLabel = "View All", onViewAll = onToggleExpanded) {
+        Text(state.eventName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text("Current Best", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    state.bestSec?.let { formatSwimTime(it) } ?: "—",
+                    style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
+                )
+            }
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                Text("Goal", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    state.goalSec?.let { formatSwimTime(it) } ?: "—",
+                    style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
+                )
+            }
+            if (state.bestSec != null && state.goalSec != null && state.bestSec > state.goalSec) {
+                Spacer(Modifier.width(10.dp))
+                Row(
+                    Modifier.background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.AutoMirrored.Outlined.TrendingDown, null, tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Column {
+                        Text("%.2fs".format(state.bestSec - state.goalSec), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        Text("To Go", fontSize = 12.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            LinearProgressIndicator(
+                progress = { (progress ?: 0f).toFloat().coerceIn(0f, 1f) },
+                modifier = Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(5.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                progress?.let { "${(it * 100).toInt()}%" } ?: "—",
+                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        val entries = if (expanded) state.log else state.log.take(2)
+        for (e in entries) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (e.title.contains("improv", true)) Icons.Outlined.ShowChart else Icons.Outlined.Group,
+                        null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(18.dp),
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(e.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    e.detail?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                Text(
+                    runCatching { LocalDate.parse(e.date) }.getOrNull()?.let { relDayLabel(it) } ?: e.date,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                IconButton(onClick = { onDeleteEntry(e.id) }) {
+                    Icon(Icons.Outlined.Delete, "Delete entry", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+        if (state.log.isEmpty()) {
+            Text("No entries yet — log a practice to start the history.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onAddEntry, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Outlined.Add, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Log practice")
+            }
+            OutlinedButton(onClick = onEditTargets, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Outlined.Edit, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Targets")
+            }
+        }
+    }
 }
+
+// ---------- Updates / permissions / footer ----------
 
 @Composable
 private fun UpdateCard(
@@ -1002,18 +1516,9 @@ private fun UpdateCard(
                 }
                 state is UpdateManager.CheckResult.Available -> {
                     val info = state.info
-                    Text(
-                        "v${info.versionName} is ready (${info.tag}).",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Text("v${info.versionName} is ready (${info.tag}).", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                     if (info.notes.isNotBlank()) {
-                        Text(
-                            info.notes.take(400),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
+                        Text(info.notes.take(400), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
                     }
                     Spacer(Modifier.height(8.dp))
                     val (done, total) = progress ?: Pair(0L, -1L)
@@ -1023,18 +1528,10 @@ private fun UpdateCard(
                                 progress = { (done.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
-                            Text(
-                                "${done / 1_048_576} / ${total / 1_048_576} MB",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Text("${done / 1_048_576} / ${total / 1_048_576} MB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         } else {
                             LinearProgressIndicator(Modifier.fillMaxWidth())
-                            Text(
-                                "Downloading… ${done / 1_048_576} MB",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Text("Downloading… ${done / 1_048_576} MB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1046,9 +1543,7 @@ private fun UpdateCard(
                                 Text(if (downloading) "Downloading…" else "Download")
                             }
                         }
-                        OutlinedButton(onClick = onCheck, enabled = !downloading, modifier = Modifier.weight(1f)) {
-                            Text("Re-check")
-                        }
+                        OutlinedButton(onClick = onCheck, enabled = !downloading, modifier = Modifier.weight(1f)) { Text("Re-check") }
                     }
                     Text(
                         "Updates install over this app — same signature, your data stays.",
@@ -1070,11 +1565,10 @@ private fun UpdateCard(
 }
 
 @Composable
-private fun PermissionsCard() {
+private fun PermissionsCard(notifProbe: Int, onRecheck: () -> Unit) {
     val context = LocalContext.current
-    var probe by remember { mutableIntStateOf(0) }
-    val granted = remember(probe) { NotificationSearchSettings.hasAccess(context) }
-    val liveCount = remember(probe, granted) {
+    val granted = remember(notifProbe) { NotificationSearchSettings.hasAccess(context) }
+    val liveCount = remember(notifProbe, granted) {
         if (granted) NotificationSearchSettings.live(context).size else 0
     }
     Card(
@@ -1092,7 +1586,7 @@ private fun PermissionsCard() {
                     color = if (granted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                 )
             }
-            IconButton(onClick = { probe++ }) {
+            IconButton(onClick = onRecheck) {
                 Icon(Icons.Outlined.Refresh, "Re-check access", tint = MaterialTheme.colorScheme.primary)
             }
             TextButton(onClick = {
@@ -1101,6 +1595,46 @@ private fun PermissionsCard() {
                 Text(if (granted) "Settings" else "Grant")
             }
         }
+    }
+}
+
+@Composable
+private fun DashBottomBar(tab: DashTab, onTab: (DashTab) -> Unit) {
+    Surface(
+        tonalElevation = 3.dp,
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            DashTabButton("Home", Icons.Outlined.Home, tab == DashTab.HOME) { onTab(DashTab.HOME) }
+            DashTabButton("Calendar", Icons.Outlined.CalendarMonth, tab == DashTab.CALENDAR) { onTab(DashTab.CALENDAR) }
+            DashTabButton("School", Icons.Outlined.School, tab == DashTab.SCHOOL) { onTab(DashTab.SCHOOL) }
+            DashTabButton("Settings", Icons.Outlined.Settings, tab == DashTab.SETTINGS) { onTab(DashTab.SETTINGS) }
+        }
+    }
+}
+
+@Composable
+private fun DashTabButton(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 10.dp)) {
+        Box(
+            Modifier.clip(RoundedCornerShape(16.dp))
+                .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                .padding(horizontal = 18.dp, vertical = 5.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon, label,
+                tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(23.dp),
+            )
+        }
+        Text(
+            label, fontSize = 12.sp,
+            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        )
     }
 }
 

@@ -669,6 +669,67 @@ private class PsCourseBuilder(
     val assignments: MutableList<PsAssignment> = mutableListOf(),
 )
 
+/** 4.0-scale points for a percent, standard 10-point band. */
+fun psPointsForPercent(percent: Double?): Double? {
+    if (percent == null) return null
+    return when {
+        percent >= 90.0 -> 4.0
+        percent >= 80.0 -> 3.0
+        percent >= 70.0 -> 2.0
+        percent >= 60.0 -> 1.0
+        else -> 0.0
+    }
+}
+
+/** Unweighted GPA over courses that carry a percent. Null when none do. */
+fun psCourseGpa(courses: List<PsCourse>): Double? {
+    val pts = courses.mapNotNull { psPointsForPercent(it.gradePercent) }
+    if (pts.isEmpty()) return null
+    return pts.average()
+}
+
+/** Count of courses by leading letter (A/B/C/D/F), in that order. */
+fun psLetterCounts(courses: List<PsCourse>): List<Pair<String, Int>> {
+    val counts = linkedMapOf("A" to 0, "B" to 0, "C" to 0, "D" to 0, "F" to 0)
+    for (c in courses) {
+        val letter = c.gradeLetter?.uppercase()?.firstOrNull()
+        val key = when (letter) {
+            'A' -> "A"; 'B' -> "B"; 'C' -> "C"; 'D' -> "D"; 'F' -> "F"
+            else -> c.gradePercent?.let { psPointsForPercent(it)?.let { p -> "ABCDF"[(4 - p.toInt()).coerceIn(0, 4)].toString() } }
+        }
+        if (key != null) counts[key] = (counts[key] ?: 0) + 1
+    }
+    return counts.filter { it.value > 0 }.toList()
+}
+
+data class PsGradeMove(val courseId: String, val courseName: String, val oldPercent: Double, val newPercent: Double) {
+    val delta: Double get() = newPercent - oldPercent
+}
+
+/**
+ * Biggest per-course percent moves between two snapshots, keyed by
+ * courseId|term. Returns up to [limit] ordered by magnitude: drops first,
+ * then gains — the shape the dashboard's School card expects.
+ */
+fun psGradeMovers(
+    prev: Map<String, Double>,
+    cur: List<PsCourse>,
+    limit: Int = 2,
+): List<PsGradeMove> {
+    val moves = mutableListOf<PsGradeMove>()
+    for (c in cur) {
+        val now = c.gradePercent ?: continue
+        val was = prev["${c.id}|${c.term}"] ?: continue
+        val d = now - was
+        if (kotlin.math.abs(d) >= 0.5) {
+            moves.add(PsGradeMove(c.id, c.name, was, now))
+        }
+    }
+    val drops = moves.filter { it.delta < 0 }.sortedBy { it.delta }
+    val gains = moves.filter { it.delta >= 0 }.sortedByDescending { it.delta }
+    return (drops + gains).take(limit)
+}
+
 /** Canonical term ordering for chips/cards. Unknown terms sort last. */
 fun termOrder(term: String): Int = when (term.uppercase()) {
     "Q1" -> 0; "Q2" -> 1; "Q3" -> 2; "Q4" -> 3

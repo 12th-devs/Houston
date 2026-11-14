@@ -209,6 +209,40 @@ class PowerSchoolProtocolTest {
         assertEquals("Q2", out.first { it.name == "Essay" }.term)
     }
 
+    private fun courseForStats(id: String, grade: String?, percent: Double?): PsCourse =
+        PsCourse(
+            id = id, name = "C $id", teacher = null, expression = null, term = "Q2",
+            gradeLetter = grade, gradePercent = percent, gradeStatus = if (percent == null) "unavailable" else "available",
+            gradeRaw = null, assignments = emptyList(),
+        )
+
+    @Test fun gpaAndLetterCounts() {
+        val courses = listOf(
+            courseForStats("1", "A", 95.0),
+            courseForStats("2", "B", 88.0),
+            courseForStats("3", "A", 92.0),
+            courseForStats("4", null, null),
+        )
+        assertEquals((4.0 + 3.0 + 4.0) / 3.0, psCourseGpa(courses)!!, 1e-9)
+        assertEquals(listOf("A" to 2, "B" to 1), psLetterCounts(courses))
+        assertNull(psCourseGpa(listOf(courseForStats("9", null, null))))
+    }
+
+    @Test fun gradeMoversPicksDropsThenGains() {
+        val prev = mapOf("1|Q2" to 92.0, "2|Q2" to 88.0, "3|Q2" to 70.0)
+        val cur = listOf(
+            courseForStats("1", "B", 88.0), // dropped 4
+            courseForStats("2", "A", 90.5), // gained 2.5
+            courseForStats("3", "C", 70.2), // noise, below threshold
+        )
+        val moves = psGradeMovers(prev, cur)
+        assertEquals(2, moves.size)
+        assertEquals("1", moves[0].courseId)
+        assertEquals(-4.0, moves[0].delta, 1e-9)
+        assertEquals("2", moves[1].courseId)
+        assertEquals(2.5, moves[1].delta, 1e-9)
+    }
+
     @Test fun cacheJsonRoundTrips() {
         val courses = listOf(
             PsCourse(
