@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Shizuku shell service uses reflection only inside its explicitly authorised user service. -->
+    <issue id="BlockedPrivateApi" severity="ignore" />
+    <!-- Houston targets physical keyboards; label-for is covered by custom focus handling. Track separately. -->
+    <issue id="MissingPrefix" severity="warning" />
+    <issue id="UnusedResources" severity="warning" />
+    <issue id="ContentDescription" severity="warning" />
+    <issue id="KeyboardInaccessibleWidget" severity="warning" />
+</lint>

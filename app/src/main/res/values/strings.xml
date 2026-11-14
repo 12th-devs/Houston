@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="home_typing_accessibility_description">Open Houston Bar when you begin typing on the home screen.</string>
+    <string name="shortcut_command_bar_short">Houston Bar</string>
+    <string name="shortcut_command_bar_long">Open Houston Bar</string>
+    <string name="shortcut_settings_short">Settings</string>
+    <string name="shortcut_settings_long">Open Houston Settings</string>
+
+    <!-- Command bar results -->
+    <string name="cd_app_icon">App icon for %1$s</string>
+    <string name="cd_result_selected">Selected: %1$s</string>
+    <string name="cd_music_artwork">Album artwork</string>
+    <string name="cd_brightness_slider">Brightness, %1$d percent</string>
+    <string name="cd_volume_slider">Volume, %1$d percent</string>
+    <string name="cd_close">Close</string>
+    <string name="cd_back">Back</string>
+    <string name="cd_open_settings">Open settings</string>
+
+    <!-- Empty / error states -->
+    <string name="empty_no_results">No matches. Try a different search.</string>
+    <string name="empty_no_tasks">No tasks. Enjoy the quiet.</string>
+    <string name="error_generic">Something went wrong. Please try again.</string>
+    <string name="error_no_photo_access">Photo access is needed to show screenshots.</string>
+</resources>
