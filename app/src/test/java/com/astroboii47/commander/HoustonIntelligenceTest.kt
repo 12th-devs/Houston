@@ -157,6 +157,63 @@ class HoustonIntelligenceTest {
         assertTrue(week.lines.any { "not a complete picture" in it || "not the full week" in it || "none recorded" in it })
     }
 
+    // --- On-device embedding ---
+    @Test fun embeddingDeterministicAndNormalized() {
+        val a = embedText("breaststroke technique practice notes")!!
+        val b = embedText("breaststroke technique practice notes")!!
+        assertEquals(a, b)
+        var norm = 0.0
+        for (v in a) norm += v * v
+        assertEquals(1.0, norm, 1e-5)
+        assertEquals(EMBEDDING_DIM, a.size)
+        assertNull(embedText(""))
+        assertNull(embedText("the and of"))
+    }
+
+    @Test fun embeddingSimilarityOrdersRelatedFirst() {
+        val swim = MemoryRecord(body = "breaststroke pull timing and kick tempo at practice")
+        val code = MemoryRecord(body = "kotlin coroutines refactoring for the dashboard build")
+        val ranked = rankSemantic("swim practice breaststroke", listOf(code, swim))
+        assertTrue(ranked.isNotEmpty())
+        assertEquals(swim.body, ranked.first().first.body)
+    }
+
+    @Test fun cosineSimBasics() {
+        assertEquals(1.0, cosineSim(listOf(1f, 0f), listOf(1f, 0f)), 1e-9)
+        assertEquals(0.0, cosineSim(listOf(1f, 0f), listOf(0f, 1f)), 1e-9)
+        assertEquals(0.0, cosineSim(emptyList(), listOf(1f)), 1e-9)
+    }
+
+    // --- Swimmer identity ---
+    @Test fun entryMatchesIdentityAcrossLinks() {
+        val links = listOf(LinkedSwimmer("987", "Jane Doe · Nitro"))
+        assertTrue(entryMatchesIdentity("Jane Doe", "Cole", links))
+        assertTrue(entryMatchesIdentity("Cole J", "Cole Johnson", emptyList()))
+        assertFalse(entryMatchesIdentity("Alex Smith", "Cole Johnson", links))
+        assertFalse(entryMatchesIdentity("", "Cole", links))
+    }
+
+    @Test fun mmSwimmersParse() {
+        val payload = parseJson(
+            "[{\"uniqueSwimmerId\":987,\"firstName\":\"Jane\",\"lastName\":\"Doe\",\"teamName\":\"Nitro\"}]",
+        )
+        val swimmers = parseMmSwimmers(payload)
+        assertEquals(1, swimmers.size)
+        assertEquals("987", swimmers[0].uniqueId)
+        assertEquals("Jane Doe · Nitro", swimmers[0].label)
+    }
+
+    @Test fun mmHistoryDatesParsed() {
+        // Epoch seconds → local YYYY-MM-DD (zone-dependent by design for display).
+        val payload = parseJson("[{\"meetId\":5132903,\"meetName\":\"State\",\"startDate\":1742947200}]")
+        val meets = parseMmMeets(payload)
+        assertEquals(1, meets.size)
+        assertTrue(meets[0].dateIso!!.matches(Regex("\\d{4}-\\d{2}-\\d{2}")))
+        // Missing/invalid dates stay null rather than inventing one.
+        val noDate = parseMmMeets(parseJson("[{\"meetId\":1,\"meetName\":\"X\"}]"))
+        assertNull(noDate[0].dateIso)
+    }
+
     // --- Automations ---
     @Test fun automationEvalGradeChange() {
         val rules = AutomationEngine.defaultRules()

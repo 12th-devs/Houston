@@ -34,7 +34,10 @@ object SwimPlatformStore {
                 "{\"name\":\"${escapeJson(p.name)}\",\"club\":\"${escapeJson(p.club)}\"," +
                     "\"school\":\"${escapeJson(p.schoolTeam)}\",\"course\":\"${p.preferredCourse}\"," +
                     "\"mmid\":\"${escapeJson(p.meetMobileSwimmerId)}\"," +
-                    "\"strokes\":[${p.strokes.joinToString(",") { "\"${escapeJson(it)}\"" }}]}",
+                    "\"strokes\":[${p.strokes.joinToString(",") { "\"${escapeJson(it)}\"" }}]," +
+                    "\"links\":[${p.links.take(10).joinToString(",") {
+                        "{\"u\":\"${escapeJson(it.uniqueId)}\",\"l\":\"${escapeJson(it.label)}\",\"m\":\"${escapeJson(it.meetName)}\"}"
+                    }}]}",
             )
         }
     }
@@ -48,6 +51,14 @@ object SwimPlatformStore {
             preferredCourse = parseSwimCourse(v.objStr("course")),
             meetMobileSwimmerId = v.objStr("mmid").orEmpty(),
             strokes = v.objArr("strokes")?.mapNotNull { (it as? JVal.Str)?.s } ?: emptyList(),
+            links = v.objArr("links")?.mapNotNull { e ->
+                if (e !is JVal.Obj) return@mapNotNull null
+                LinkedSwimmer(
+                    uniqueId = e.objStr("u") ?: return@mapNotNull null,
+                    label = e.objStr("l") ?: e.objStr("u") ?: "",
+                    meetName = e.objStr("m").orEmpty(),
+                )
+            } ?: emptyList(),
         )
     }
 

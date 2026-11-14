@@ -12,6 +12,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoMode
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -65,6 +67,65 @@ fun SchoolAlertsCard(prefs: SchoolAlertPrefs, onSave: (SchoolAlertPrefs) -> Unit
             label = { Text("Upcoming window (days)") }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         )
     }
+}
+
+@Composable
+fun BackgroundCard(
+    briefingOn: Boolean,
+    briefingTime: String,
+    syncOn: Boolean,
+    syncHours: Long,
+    lastSync: String?,
+    onToggleBriefing: (Boolean) -> Unit,
+    onToggleSync: (Boolean) -> Unit,
+    onInterval: (Long) -> Unit,
+    onSyncNow: () -> Unit,
+) {
+    SectionCard(icon = Icons.Outlined.Sync, title = "Background work") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Morning briefing", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Daily at $briefingTime · best-effort, may defer in battery saver",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = briefingOn, onCheckedChange = onToggleBriefing)
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Background sync", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Calendars + grades every ${syncHours}h · retries with backoff",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = syncOn, onCheckedChange = onToggleSync)
+        }
+        if (syncOn) {
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(2L, 6L, 12L, 24L).forEach { h ->
+                    FilterChip(selected = syncHours == h, onClick = { onInterval(h) }, label = { Text("${h}h") })
+                }
+            }
+        }
+        lastSync?.let {
+            Text(
+                "Last background sync ${it.take(16).replace('T', ' ')}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        Button(onClick = onSyncNow, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            Icon(Icons.Outlined.Sync, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Sync now")
+        }
+    }
+    Spacer(Modifier.height(12.dp))
 }
 
 @Composable

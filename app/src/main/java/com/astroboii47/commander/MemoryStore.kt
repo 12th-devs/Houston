@@ -38,6 +38,7 @@ data class MemoryRecord(
     val analysisStatus: MemoryAnalysisStatus = MemoryAnalysisStatus.PENDING,
     val analysisError: String? = null,
     val trashed: Boolean = false,
+    val embedding: List<Float> = emptyList(), // houston-hash-128/v1, recomputed on save
 )
 
 data class MemoryCollection(
@@ -80,9 +81,13 @@ object MemoryStore {
     fun upsert(context: Context, memory: MemoryRecord): MemoryRecord {
         val all = loadMemories(context, includeTrashed = true).associateBy { it.uuid }.toMutableMap()
         val now = Instant.now().toString()
-        all[memory.uuid] = memory.copy(modifiedIso = now)
+        val withVec = memory.copy(
+            modifiedIso = now,
+            embedding = embedText(memoryEmbedSource(memory)) ?: memory.embedding,
+        )
+        all[withVec.uuid] = withVec
         saveMemories(context, all.values.toList())
-        return all[memory.uuid]!!
+        return all[withVec.uuid]!!
     }
 
     fun trash(context: Context, uuid: String) {
@@ -148,6 +153,20 @@ object MemoryStore {
             .take(limit).map { it.first }
     }
 
+    /**
+     * Semantic retrieval: blended cosine + literal ranking over real stored
+     * memories. Returns records only — callers validate citations with
+     * [validateReferencedIds] before showing links.
+     */
+    fun semanticSearch(context: Context, query: String, limit: Int = 50): List<MemoryRecord> {
+        if (query.trim().length < 2) return emptyList()
+        recordHistory(context, query.trim())
+        val ranked = rankSemantic(query, loadMemories(context), limit)
+        if (ranked.isNotEmpty()) return ranked.map { it.first }
+        // Fall back to literal search so short/rare queries still work.
+        return search(context, query, limit)
+    }
+
     fun recordHistory(context: Context, query: String) {
         val hist = searchHistory(context).toMutableList()
         hist.remove(query)
@@ -183,7 +202,8 @@ object MemoryStore {
             append("\"err\":${m.analysisError?.let { "\"${escapeJson(it)}\"" } ?: "null"},")
             fun arr(v: List<String>) = v.joinToString(",", "[", "]") { "\"${escapeJson(it)}\"" }
             append("\"tags\":${arr(m.tags)},\"cols\":${arr(m.collections)},\"pl\":${arr(m.places)},")
-            append("\"ac\":${arr(m.actions)},\"img\":${arr(m.imageUris)},\"vx\":${arr(m.voiceUris)}}")
+            append("\"ac\":${arr(m.actions)},\"img\":${arr(m.imageUris)},\"vx\":${arr(m.voiceUris)},")
+            append("\"emb\":[${m.embedding.take(EMBEDDING_DIM).joinToString(",") { "%.4f".format(it) }}]}")
         }
         append(']')
     }
@@ -213,6 +233,7 @@ object MemoryStore {
                 analysisStatus = runCatching { MemoryAnalysisStatus.valueOf(e.objStr("st") ?: "PENDING") }.getOrDefault(MemoryAnalysisStatus.PENDING),
                 analysisError = e.objStr("err"),
                 trashed = e.objBool("tr") == true,
+                embedding = e.objArr("emb")?.mapNotNull { (it as? JVal.Num)?.v?.toFloat() }?.take(EMBEDDING_DIM) ?: emptyList(),
             )
         }
     }

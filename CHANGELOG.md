@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.0-alpha.1 (pre-release)
+
+### Added
+
+- On-device embedding model (`houston-hash-128/v1`): dependency-free hashed text vectors, blended semantic + literal memory ranking, offline Q&A re-ranking, no model download or network.
+- Background guarantees: foreground `dataSync` sync service (calendars + PowerSchool + insights + automations), chained inexact alarms, boot rescheduling, failure backoff, run history, per-interval sync settings with Sync-now.
+- Swimmer search + multiple Meet Mobile identities per swimmer: advanced-search linking, per-identity cross-meet history, jump-to-import, widened identity matching with explicit confirm.
+- Floating icon-only navigation bar with translucent content-behind treatment and bottom scroll clearance.
+- UI polish: pull-to-refresh on Home, animated card size transitions, defined start/best/goal baselines under every goal bar, semantic search field hints.
+
 ## 3.0.0
 
 ### Added

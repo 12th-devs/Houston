@@ -14,8 +14,9 @@ import kotlinx.coroutines.withContext
  * result is imported. Raw values preserved; no cross-course comparison.
  */
 
-data class MmMeet(val id: String, val name: String, val city: String = "")
+data class MmMeet(val id: String, val name: String, val city: String = "", val dateIso: String? = null)
 data class MmEventNode(val id: String, val name: String)
+data class MmSwimmer(val uniqueId: String, val label: String, val team: String = "")
 data class MmEntry(
     val eventName: String,
     val timeSec: Double?,
@@ -63,7 +64,7 @@ fun mmIsDq(e: JVal.Obj): Boolean {
     return !reason.isNullOrBlank()
 }
 
-/** Search payload → meets (tolerant: list or {meets:[...]}). */
+/** Search/history payload → meets (tolerant: list or {meets:[...]}). */
 fun parseMmMeets(payload: JVal): List<MmMeet> {
     val arr: List<JVal> = when (payload) {
         is JVal.Arr -> payload.l
@@ -80,8 +81,45 @@ fun parseMmMeets(payload: JVal): List<MmMeet> {
         val id = e.objNum("meetId", "id")?.toLong()?.toString()
             ?: e.objText("meetId", "id") ?: return@mapNotNull null
         val name = e.objText("meetName", "name") ?: "Meet $id"
-        MmMeet(id, name, e.objText("city", "cityName").orEmpty())
+        MmMeet(id, name, e.objText("city", "cityName").orEmpty(), meetDateIso(e))
     }.take(50)
+}
+
+/** Epoch-seconds date fields → YYYY-MM-DD. Never throws. */
+fun meetDateIso(e: JVal.Obj): String? {
+    val raw = e.objNum("startDate", "beginDate", "meetDate", "startTime", "date")
+        ?: e.objText("startDate", "beginDate", "meetDate")?.toDoubleOrNull()
+        ?: return null
+    if (raw <= 0) return null
+    return runCatching {
+        val secs = if (raw > 1e12) (raw / 1000).toLong() else raw.toLong()
+        java.time.Instant.ofEpochSecond(secs).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+    }.getOrNull()
+}
+
+/** Swimmer advanced-search payload → candidate identities (tolerant). */
+fun parseMmSwimmers(payload: JVal): List<MmSwimmer> {
+    val arr: List<JVal> = when (payload) {
+        is JVal.Arr -> payload.l
+        is JVal.Obj -> {
+            (payload.m["swimmers"] as? JVal.Arr)?.l
+                ?: (payload.m["results"] as? JVal.Arr)?.l
+                ?: (payload.m["result"] as? JVal.Arr)?.l
+                ?: return emptyList()
+        }
+        else -> return emptyList()
+    }
+    return arr.mapNotNull { e ->
+        if (e !is JVal.Obj) return@mapNotNull null
+        val uid = e.objNum("uniqueSwimmerId", "uniqueSwimmerRecordId", "swimmerId", "id")?.toLong()?.toString()
+            ?: e.objText("uniqueSwimmerId", "uniqueSwimmerRecordId", "swimmerId", "id")
+            ?: return@mapNotNull null
+        val first = e.objText("firstName") ?: (e.m["swimmer"] as? JVal.Obj)?.objText("firstName").orEmpty()
+        val last = e.objText("lastName") ?: (e.m["swimmer"] as? JVal.Obj)?.objText("lastName").orEmpty()
+        val label = "$first $last".trim().ifEmpty { e.objText("name", "swimmerName") ?: "Swimmer $uid" }
+        val team = e.objText("teamName", "team", "clubName").orEmpty()
+        MmSwimmer(uid, if (team.isNotBlank()) "$label · $team" else label, team)
+    }.take(20)
 }
 
 /** Meet/program payload → event nodes (tolerant drill-down). */
@@ -195,4 +233,58 @@ fun mmUserMessage(e: Exception): String = when (e) {
     is MeetMobile.MeetMobileException.Schema -> "Meet Mobile changed its response shape (${e.message}). Nothing was imported."
     is MeetMobile.MeetMobileException.Api -> e.message ?: "Meet Mobile reported an unsuccessful request."
     else -> "Meet Mobile request failed: ${(e.message ?: "network error").take(140)}"
+}
+
+/** Generic allowlisted POST with the parameter digest. */
+suspend fun mmPost(endpoint: String, params: Map<String, Any?>, body: () -> String): JVal =
+    withContext(Dispatchers.IO) {
+        val route = MeetMobile.ALLOWLIST[endpoint] ?: throw IllegalArgumentException("Endpoint is not in the read-only allowlist.")
+        if (route.first != "POST") throw IllegalArgumentException("Endpoint is not a POST route.")
+        val conn = (java.net.URL(MeetMobile.BASE_URL + route.second).openConnection() as java.net.HttpURLConnection).apply {
+            instanceFollowRedirects = false
+            connectTimeout = 25000
+            readTimeout = 25000
+            requestMethod = "POST"
+            doOutput = true
+            for ((k, v) in mapOf(
+                "Content-Type" to "application/json",
+                "Accept" to "application/json",
+                "User-Agent" to "HoustonSwim/3.0",
+                "auth_key" to MeetMobile.parameterDigest(params),
+            )) setRequestProperty(k, v)
+            outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body()) }
+        }
+        try {
+            val status = conn.responseCode
+            when (status) {
+                401, 402, 403 -> throw MeetMobile.MeetMobileException.Restricted()
+                429 -> throw MeetMobile.MeetMobileException.RateLimited(120)
+                200 -> Unit
+                else -> throw MeetMobile.MeetMobileException.Http(status)
+            }
+            val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val payload = parseJson(text)
+            if (payload !is JVal.Obj) throw MeetMobile.MeetMobileException.Schema("Response envelope changed.")
+            if ((payload.obj("code")?.num()?.toInt()) != 1) throw MeetMobile.MeetMobileException.Api("Meet Mobile reported an unsuccessful request.")
+            payload.obj("result") ?: payload.obj("results")
+            ?: throw MeetMobile.MeetMobileException.Schema("Successful response is missing result/results.")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+/** Bounded swimmer advanced search (3–100 chars, page 1, up to 20). */
+suspend fun mmSearchSwimmers(searchString: String): JVal {
+    val q = searchString.trim()
+    require(q.length in 3..100) { "Enter a swimmer name of 3–100 characters." }
+    return mmPost("swimmer_search", mapOf("searchString" to q, "currentPage" to 1, "pageSize" to 20)) {
+        "{\"searchString\":\"${q.replace("\"", "")}\",\"currentPage\":1,\"pageSize\":20}"
+    }
+}
+
+/** Cross-meet history for one verified unique swimmer id (page 1, up to 50). */
+suspend fun mmSwimmerHistory(uniqueId: String): List<MmMeet> {
+    val id = uniqueId.toLongOrNull() ?: throw IllegalArgumentException("Invalid swimmer id.")
+    val payload = mmGet("history", mapOf("swimmerId" to id, "pageSize" to 50, "currentPage" to 1))
+    return parseMmMeets(payload)
 }

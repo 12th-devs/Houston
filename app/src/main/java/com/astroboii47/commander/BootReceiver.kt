@@ -17,8 +17,9 @@ class BootReceiver : BroadcastReceiver() {
             action == Intent.ACTION_USER_UNLOCKED ||
             action == Intent.ACTION_MY_PACKAGE_REPLACED
         if (!relevant) return
-        // Best-effort: re-queue the morning briefing alarm on every boot/update.
+        // Best-effort: re-queue the morning briefing + periodic sync alarms.
         runCatching { HoustonScheduler.reschedule(context) }
+        runCatching { HoustonScheduler.rescheduleSync(context) }
         if (!EdgeBarSettings.enabled(context)) return
         // Overlay windows are unavailable until the user unlocks, so a direct-boot
         // delivery only records intent; USER_UNLOCKED / BOOT_COMPLETED performs it.

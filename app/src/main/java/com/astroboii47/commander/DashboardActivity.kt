@@ -43,6 +43,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -104,6 +105,7 @@ private fun DashboardTheme(content: @Composable () -> Unit) {
 
 private enum class DashTab { HOME, CALENDAR, SCHOOL, SWIM, MEMORIES }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun DashboardScreen(launchIntent: Intent? = null) {
     val context = LocalContext.current
@@ -146,6 +148,8 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
     var swimSyncLabel by remember { mutableStateOf<String?>(null) }
     var meetStatus by remember { mutableStateOf<String?>(null) }
     var showMeetConnect by remember { mutableStateOf(false) }
+    var showSwimmerLink by remember { mutableStateOf(false) }
+    var pendingMeet by remember { mutableStateOf<MmMeet?>(null) }
 
     // Memories state
     var memories by remember { mutableStateOf(listOf<MemoryRecord>()) }
@@ -162,6 +166,9 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
     var autoRules by remember { mutableStateOf(listOf<AutomationRule>()) }
     var autoRuns by remember { mutableStateOf(listOf<AutomationRun>()) }
     var notifyPrefs by remember { mutableStateOf(mapOf<String, Boolean>()) }
+    var syncOn by remember { mutableStateOf(true) }
+    var syncHours by remember { mutableStateOf(6L) }
+    var lastBgSync by remember { mutableStateOf<String?>(null) }
 
     fun reloadSwimPlatform() {
         swimProfile = SwimPlatformStore.loadProfile(context)
@@ -182,6 +189,9 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
         alertPrefs = SchoolAlertStore.load(context)
         autoRules = AutomationEngine.loadRules(context)
         autoRuns = AutomationEngine.loadRuns(context)
+        syncOn = HoustonSyncPrefs.syncEnabled(context)
+        syncHours = HoustonSyncPrefs.intervalHours(context)
+        lastBgSync = HoustonSyncPrefs.lastSync(context)
         notifyPrefs = listOf(
             HoustonNotifyPrefs.CH_BRIEFING, HoustonNotifyPrefs.CH_SCHOOL,
             HoustonNotifyPrefs.CH_SWIM, HoustonNotifyPrefs.CH_MEMORY, HoustonNotifyPrefs.CH_AUTO,
@@ -360,6 +370,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
         reloadIntelligence()
         InsightStore.pruneExpired(context)
         runCatching { HoustonScheduler.reschedule(context) }
+        runCatching { HoustonScheduler.rescheduleSync(context) }
         // Evaluate automation rules on start; record runs (no repeat alerts).
         val fired = AutomationEngine.evaluate(autoRules, emptyList(), insights)
         if (fired.isNotEmpty()) {
@@ -440,6 +451,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
             swimSyncLabel?.let { "Swim ${it.take(16).replace('T', ' ')}" },
         ).joinToString(" · ").ifEmpty { null }
     }
+    val refreshing = syncingFeeds || (psUi as? DashboardPsUi.Content)?.syncing == true
 
     // Weekly review inputs — missing data reported honestly, never padded.
     val weekly = remember(psCourses, practices, raceResults, memories, movers, feedsVersion) {
@@ -476,9 +488,9 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
     val memScroll = rememberScrollState()
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                AnimatedContent(
+        Box(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize()) {
+            AnimatedContent(
                     targetState = tab,
                     transitionSpec = {
                         fadeIn(animationSpec = tween(180)) togetherWith
@@ -488,6 +500,14 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                 ) { page ->
                 when (page) {
                     DashTab.HOME -> {
+                        PullToRefreshBox(
+                            isRefreshing = refreshing,
+                            onRefresh = {
+                                syncAllFeeds()
+                                doPsRefresh(null, null)
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(homeScroll),
                         ) {
@@ -518,7 +538,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                                     }
                                 }
                             }
-                            Column(Modifier.padding(horizontal = 18.dp)) {
+                            Column(Modifier.padding(horizontal = 18.dp).padding(bottom = 108.dp)) {
                             HomePage(
                                 feeds = feeds,
                                 feedsVersion = feedsVersion,
@@ -587,12 +607,13 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             Spacer(Modifier.height(8.dp))
                             }
                         }
+                        }
                     }
                     DashTab.CALENDAR -> {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(calScroll)
                                 .padding(horizontal = 18.dp)
-                                .padding(top = 12.dp, bottom = 6.dp),
+                                .padding(top = 12.dp, bottom = 108.dp),
                         ) {
                             CalendarPage(
                                 feeds = feeds,
@@ -611,7 +632,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(schoolScroll)
                                 .padding(horizontal = 18.dp)
-                                .padding(top = 12.dp, bottom = 6.dp),
+                                .padding(top = 12.dp, bottom = 108.dp),
                         ) {
                             // Map the dashboard auth state onto the page's view state.
                             val pageUi: DashboardPsUi = when (val s = psUi) {
@@ -672,6 +693,34 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                                 alertPrefs = it
                             })
                             Spacer(Modifier.height(12.dp))
+                            val morningRule = autoRules.firstOrNull { it.id == "auto-morning-briefing" }
+                            BackgroundCard(
+                                briefingOn = morningRule?.enabled != false,
+                                briefingTime = morningRule?.timeIso ?: "07:30",
+                                syncOn = syncOn,
+                                syncHours = syncHours,
+                                lastSync = lastBgSync,
+                                onToggleBriefing = { on ->
+                                    val updated = autoRules.map { if (it.id == "auto-morning-briefing") it.copy(enabled = on) else it }
+                                    AutomationEngine.saveRules(context, updated)
+                                    autoRules = updated
+                                    if (on) HoustonScheduler.reschedule(context) else HoustonScheduler.cancel(context)
+                                },
+                                onToggleSync = { on ->
+                                    HoustonSyncPrefs.setSyncEnabled(context, on)
+                                    syncOn = on
+                                    HoustonScheduler.rescheduleSync(context)
+                                },
+                                onInterval = { h ->
+                                    HoustonSyncPrefs.setIntervalHours(context, h)
+                                    syncHours = h
+                                    HoustonScheduler.rescheduleSync(context)
+                                },
+                                onSyncNow = {
+                                    HoustonSyncService.start(context)
+                                    Toast.makeText(context, "Background sync started", Toast.LENGTH_SHORT).show()
+                                },
+                            )
                             AutomationsCard(
                                 rules = autoRules,
                                 runs = autoRuns,
@@ -698,7 +747,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(swimScroll)
                                 .padding(horizontal = 18.dp)
-                                .padding(top = 12.dp, bottom = 6.dp),
+                                .padding(top = 12.dp, bottom = 108.dp),
                         ) {
                             SwimPlatformPage(
                                 profile = swimProfile,
@@ -757,11 +806,16 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                                     }
                                 },
                                 onConnectResults = { showMeetConnect = true },
+                            onFindSwimmer = { showSwimmerLink = true },
+                            linkedCount = swimProfile.links.size,
                             )
                             if (showMeetConnect) {
                                 MeetImportDialog(
                                     profileName = swimProfile.name,
-                                    onDismiss = { showMeetConnect = false },
+                                    identityLabels = (listOf(swimProfile.name) + swimProfile.links.map { it.label } + swimProfile.links.map { it.uniqueId })
+                                        .map { it.trim() }.filter { it.length >= 2 },
+                                    initialMeet = pendingMeet,
+                                    onDismiss = { showMeetConnect = false; pendingMeet = null },
                                     onImport = { imported, label ->
                                         val fresh = SwimPlatformStore.importResults(context, imported)
                                         var goalInsights: List<Insight> = emptyList()
@@ -797,8 +851,24 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                                             ),
                                         )
                                         showMeetConnect = false
+                                        pendingMeet = null
                                     },
                                     onStatus = { meetStatus = it },
+                                )
+                            }
+                            if (showSwimmerLink) {
+                                SwimmerLinkDialog(
+                                    profile = swimProfile,
+                                    onSaveLinks = { links ->
+                                        SwimPlatformStore.saveProfile(context, swimProfile.copy(links = links))
+                                        reloadSwimPlatform()
+                                    },
+                                    onImportMeet = { m ->
+                                        pendingMeet = m
+                                        showSwimmerLink = false
+                                        showMeetConnect = true
+                                    },
+                                    onDismiss = { showSwimmerLink = false },
                                 )
                             }
                             Spacer(Modifier.height(8.dp))
@@ -808,7 +878,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(memScroll)
                                 .padding(horizontal = 18.dp)
-                                .padding(top = 12.dp, bottom = 6.dp),
+                                .padding(top = 12.dp, bottom = 108.dp),
                         ) {
                             if (openMemory != null) {
                                 MemoryDetailSheet(
@@ -830,7 +900,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             }
                             val shown = remember(memoryQuery, memories) {
                                 if (memoryQuery.isBlank()) memories
-                                else MemoryStore.search(context, memoryQuery)
+                                else MemoryStore.semanticSearch(context, memoryQuery)
                             }
                             MemoriesPage(
                                 memories = shown,
@@ -890,16 +960,19 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                 }
             }
 
-            // Floating M3E-style bar: pill with margins, never covering content.
+            // Floating icon-only bar overlaid on content: page content scrolls
+            // behind it (each tab leaves bottom clearance), the bar itself is
+            // translucent so the content shows through at the edges.
             Box(
-                Modifier.fillMaxWidth()
+                Modifier.align(androidx.compose.ui.Alignment.BottomCenter)
+                    .fillMaxWidth()
                     .navigationBarsPadding()
                     .padding(horizontal = 18.dp)
                     .padding(top = 8.dp, bottom = 12.dp),
             ) {
                 Surface(
                     shape = RoundedCornerShape(28.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.88f),
                     tonalElevation = 3.dp,
                     shadowElevation = 6.dp,
                     modifier = Modifier.fillMaxWidth(),
@@ -912,31 +985,26 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                     selected = tab == DashTab.HOME,
                     onClick = { tab = DashTab.HOME },
                     icon = { Icon(Icons.Outlined.Home, "Home") },
-                    label = { Text("Home") },
                 )
                 NavigationBarItem(
                     selected = tab == DashTab.CALENDAR,
                     onClick = { tab = DashTab.CALENDAR },
                     icon = { Icon(Icons.Outlined.CalendarMonth, "Calendar") },
-                    label = { Text("Calendar") },
                 )
                 NavigationBarItem(
                     selected = tab == DashTab.SCHOOL,
                     onClick = { tab = DashTab.SCHOOL },
                     icon = { Icon(Icons.Outlined.School, "School") },
-                    label = { Text("School") },
                 )
                 NavigationBarItem(
                     selected = tab == DashTab.SWIM,
                     onClick = { tab = DashTab.SWIM },
                     icon = { Icon(Icons.Outlined.Waves, "Swim") },
-                    label = { Text("Swim") },
                 )
                 NavigationBarItem(
                     selected = tab == DashTab.MEMORIES,
                     onClick = { tab = DashTab.MEMORIES },
                     icon = { Icon(Icons.Outlined.Book, "Memories") },
-                    label = { Text("Memories") },
                 )
                     }
                 }

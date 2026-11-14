@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
@@ -280,6 +281,17 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/home_typing_accessibility" />
         </service>
+        <service
+            android:name=".HoustonSyncService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name=".SyncReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.astroboii47.commander.SYNC_NOW" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".BriefingReceiver"
             android:exported="false">

@@ -83,7 +83,8 @@ fun MemoriesPage(
     ) {
         OutlinedTextField(
             query, onQuery,
-            label = { Text("What did I write about…?") },
+            label = { Text("Search — exact or by meaning…") },
+            placeholder = { Text("“breaststroke technique”, “Houston deadline worries”…") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )

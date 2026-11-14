@@ -35,17 +35,19 @@ import kotlinx.coroutines.withContext
 @Composable
 fun MeetImportDialog(
     profileName: String,
+    identityLabels: List<String> = listOf(profileName),
+    initialMeet: MmMeet? = null,
     onDismiss: () -> Unit,
     onImport: (List<RaceResult>, String) -> Unit,
     onStatus: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    var step by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var step by remember { androidx.compose.runtime.mutableIntStateOf(if (initialMeet == null) 0 else 1) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var keyword by remember { mutableStateOf("") }
     var meets by remember { mutableStateOf(listOf<MmMeet>()) }
-    var meet by remember { mutableStateOf<MmMeet?>(null) }
+    var meet by remember { mutableStateOf(initialMeet) }
     var events by remember { mutableStateOf(listOf<MmEventNode>()) }
     var event by remember { mutableStateOf<MmEventNode?>(null) }
     var entries by remember { mutableStateOf(listOf<MmEntry>()) }
@@ -65,6 +67,24 @@ fun MeetImportDialog(
         }
     }
 
+    fun loadProgram(m: MmMeet) {
+        meet = m
+        run {
+            val payload = mmGet("meet", mapOf("id" to m.id.toLong()))
+            val evs = parseMmEvents(payload)
+            withContext(Dispatchers.Main) {
+                events = evs
+                if (evs.isEmpty()) {
+                    error = "Meet loaded, but no parsable program was published for it."
+                } else step = 1
+            }
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(initialMeet) {
+        if (initialMeet != null && events.isEmpty()) loadProgram(initialMeet)
+    }
+
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(when (step) { 0 -> "Find meet"; 1 -> "Pick event"; 2 -> "Confirm & import"; else -> "Import" }) },
@@ -81,17 +101,7 @@ fun MeetImportDialog(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.fillMaxWidth().clickable {
-                                    meet = m
-                                    run {
-                                        val payload = mmGet("meet", mapOf("id" to m.id.toLong()))
-                                        val evs = parseMmEvents(payload)
-                                        withContext(Dispatchers.Main) {
-                                            events = evs
-                                            if (evs.isEmpty()) {
-                                                error = "Meet loaded, but no parsable program was published for it."
-                                            } else step = 1
-                                        }
-                                    }
+                                    loadProgram(m)
                                 }.padding(vertical = 4.dp),
                             )
                         }
@@ -127,14 +137,15 @@ fun MeetImportDialog(
                         }
                     }
                     2 -> {
-                        val mine = entries.filter {
-                            profileName.isNotBlank() && it.swimmerLabel.contains(profileName.trim(), ignoreCase = true)
+                        val known = identityLabels.map { it.trim() }.filter { it.length >= 2 }
+                        val mine = entries.filter { en ->
+                            known.any { k -> en.swimmerLabel.contains(k, ignoreCase = true) }
                         }
                         Text(
                             "${entries.size} finished entr${if (entries.size == 1) "y" else "ies"} in ${event?.name}. " +
-                                if (profileName.isBlank()) "Set your name in the swimmer profile to auto-match."
-                                else if (mine.isEmpty()) "No entry matches “$profileName” — import only after confirming identity."
-                                else "${mine.size} match “$profileName”.",
+                                if (known.isEmpty()) "Set your name in the swimmer profile to auto-match."
+                                else if (mine.isEmpty()) "No entry matches your ${if (known.size == 1) "name" else "linked identities"} — import only after confirming identity."
+                                else "${mine.size} match your ${if (known.size == 1) "name" else "linked identities"}.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         (if (mine.isNotEmpty()) mine else entries).take(6).forEach { en ->
@@ -175,8 +186,9 @@ fun MeetImportDialog(
                 2 -> TextButton(enabled = !busy && confirmed && entries.isNotEmpty(), onClick = {
                     val m = meet ?: return@TextButton
                     val ev = event ?: return@TextButton
-                    val mine = entries.filter {
-                        profileName.isNotBlank() && it.swimmerLabel.contains(profileName.trim(), ignoreCase = true)
+                    val known = identityLabels.map { it.trim() }.filter { it.length >= 2 }
+                    val mine = entries.filter { en ->
+                        known.any { k -> en.swimmerLabel.contains(k, ignoreCase = true) }
                     }.ifEmpty { entries.filter { !it.dq && it.timeSec != null }.take(1) }
                     val results = mine.mapNotNull { en ->
                         val t = en.timeSec ?: return@mapNotNull null
@@ -205,38 +217,9 @@ fun MeetImportDialog(
     )
 }
 
-private suspend fun mmPostSearch(keyword: String): JVal = withContext(Dispatchers.IO) {
-    val body = "{\"keyword\":\"${keyword.replace("\"", "")}\",\"currentPage\":1,\"pageSize\":20}"
-    val conn = (java.net.URL(MeetMobile.BASE_URL + "meet/search").openConnection() as java.net.HttpURLConnection).apply {
-        instanceFollowRedirects = false
-        connectTimeout = 25000
-        readTimeout = 25000
-        requestMethod = "POST"
-        doOutput = true
-        val params = mapOf("keyword" to keyword, "currentPage" to 1, "pageSize" to 20)
-        for ((k, v) in mapOf(
-            "Content-Type" to "application/json",
-            "Accept" to "application/json",
-            "User-Agent" to "HoustonSwim/3.0",
-            "auth_key" to MeetMobile.parameterDigest(params),
-        )) setRequestProperty(k, v)
-        outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
-    }
-    try {
-        val status = conn.responseCode
-        when (status) {
-            401, 402, 403 -> throw MeetMobile.MeetMobileException.Restricted()
-            429 -> throw MeetMobile.MeetMobileException.RateLimited(120)
-            200 -> Unit
-            else -> throw MeetMobile.MeetMobileException.Http(status)
-        }
-        val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-        val payload = parseJson(text)
-        if (payload !is JVal.Obj) throw MeetMobile.MeetMobileException.Schema("Response envelope changed.")
-        if ((payload.obj("code")?.num()?.toInt()) != 1) throw MeetMobile.MeetMobileException.Api("Meet Mobile reported an unsuccessful request.")
-        payload.obj("result") ?: payload.obj("results")
-        ?: throw MeetMobile.MeetMobileException.Schema("Successful response is missing result/results.")
-    } finally {
-        conn.disconnect()
-    }
+private suspend fun mmPostSearch(keyword: String): JVal = mmPost(
+    "search",
+    mapOf("keyword" to keyword.trim(), "currentPage" to 1, "pageSize" to 20),
+) {
+    "{\"keyword\":\"${keyword.trim().replace("\"", "")}\",\"currentPage\":1,\"pageSize\":20}"
 }

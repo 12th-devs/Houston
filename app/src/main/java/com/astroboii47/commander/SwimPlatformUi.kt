@@ -60,6 +60,8 @@ fun SwimPlatformPage(
     onDeletePractice: (String) -> Unit,
     onAddResult: (RaceResult) -> Unit,
     onConnectResults: () -> Unit,
+    onFindSwimmer: () -> Unit = {},
+    linkedCount: Int = 0,
 ) {
     var showProfile by remember { mutableStateOf(false) }
     var showGoal by remember { mutableStateOf<SwimGoal?>(null) }
@@ -115,6 +117,14 @@ fun SwimPlatformPage(
                         progress = { (progress ?: 0f).toFloat().coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
                     )
+                    // Defined baseline: start → best → goal, never an arbitrary %.
+                    Text(
+                        "Start ${g.startSec?.let { formatSwimTime(it) } ?: "—"} · " +
+                            "Best ${g.currentBestSec?.let { formatSwimTime(it) } ?: "—"} · " +
+                            "Goal ${formatSwimTime(g.targetSec)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -140,6 +150,11 @@ fun SwimPlatformPage(
             }
             OutlinedButton(onClick = onConnectResults, modifier = Modifier.weight(1f)) {
                 Text("Connect results")
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onFindSwimmer, modifier = Modifier.weight(1f)) {
+                Text(if (linkedCount == 0) "Find swimmer" else "Swimmers ($linkedCount linked)")
             }
         }
         meetStatus?.let {

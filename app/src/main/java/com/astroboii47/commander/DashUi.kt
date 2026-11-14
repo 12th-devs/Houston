@@ -1,5 +1,6 @@
 package com.astroboii47.commander
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -150,7 +151,7 @@ fun SectionCard(
     content: @Composable () -> Unit,
 ) {
     Card(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().animateContentSize(),
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
@@ -213,7 +214,7 @@ fun MonthGridCard(
     val cells = List(leading) { null } + (1..month.lengthOfMonth()).map(month::atDay)
     val padded = cells + List((7 - cells.size % 7) % 7) { null }
     Card(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().animateContentSize(),
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {

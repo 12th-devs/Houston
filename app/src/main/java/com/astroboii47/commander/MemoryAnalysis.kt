@@ -91,23 +91,28 @@ object LocalHeuristicProvider : ModelProvider {
     }
 
     override suspend fun query(question: String, candidates: List<MemoryRecord>): QueryAnswer {
-        val terms = question.lowercase().replace(Regex("[^a-z0-9 ]"), " ").split(Regex("\\s+"))
-            .filter { it.length >= 3 && it !in STOP + setOf("what", "did", "find", "about") }
-        if (terms.isEmpty() || candidates.isEmpty()) {
+        if (candidates.isEmpty()) {
             return QueryAnswer("I couldn't find anything matching that in your memories.", emptyList())
         }
-        val scored = candidates.mapNotNull { m ->
-            val hay = "${m.title}\n${m.body}\n${m.note}\n${m.tags.joinToString(" ")}".lowercase()
-            val hits = terms.count { it in hay }
-            if (hits == 0) null else m to hits
-        }.sortedByDescending { it.second }.take(3)
+        // Prefer blended semantic ranking; fall back to literal overlap.
+        val ranked = rankSemantic(question, candidates, 3).map { it.first }
+        val scored = if (ranked.isNotEmpty()) ranked else {
+            val terms = question.lowercase().replace(Regex("[^a-z0-9 ]"), " ").split(Regex("\\s+"))
+                .filter { it.length >= 3 && it !in STOP + setOf("what", "did", "find", "about") }
+            if (terms.isEmpty()) return QueryAnswer("I couldn't find anything matching that in your memories.", emptyList())
+            candidates.mapNotNull { m ->
+                val hay = "${m.title}\n${m.body}\n${m.note}\n${m.tags.joinToString(" ")}".lowercase()
+                val hits = terms.count { it in hay }
+                if (hits == 0) null else m to hits
+            }.sortedByDescending { it.second }.take(3).map { it.first }
+        }
         if (scored.isEmpty()) {
             return QueryAnswer("Nothing in your memories matches “$question”.", emptyList())
         }
-        val ids = validateReferencedIds(scored.map { it.first.uuid }, candidates.map { it.uuid }.toSet())
+        val ids = validateReferencedIds(scored.map { it.uuid }, candidates.map { it.uuid }.toSet())
         val answer = buildString {
             append("Found ${ids.size} memor${if (ids.size == 1) "y" else "ies"}: ")
-            append(scored.map { "“${it.first.title.ifEmpty { it.first.body.take(40) }}”" }.joinToString("; "))
+            append(scored.map { "“${it.title.ifEmpty { it.body.take(40) }}”" }.joinToString("; "))
             append(".")
         }
         return QueryAnswer(answer, ids, ids.map { "memory:$it" })

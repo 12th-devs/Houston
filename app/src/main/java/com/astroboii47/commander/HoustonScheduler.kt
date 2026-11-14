@@ -49,6 +49,31 @@ object HoustonScheduler {
         briefingIntent(context)?.let { runCatching { am.cancel(it) } }
     }
 
+    // ---------- Periodic background sync ----------
+
+    private const val REQ_SYNC = 3102
+
+    fun rescheduleSync(context: Context) {
+        val am = context.getSystemService(AlarmManager::class.java) ?: return
+        val existing = syncIntent(context)
+        if (!HoustonSyncPrefs.syncEnabled(context)) {
+            existing?.let { runCatching { am.cancel(it) } }
+            return
+        }
+        val pi = existing ?: return
+        val delayMs = (HoustonSyncPrefs.intervalHours(context) + HoustonSyncPrefs.backoffHours(context)) * 3_600_000L
+        val at = System.currentTimeMillis() + delayMs.coerceAtLeast(2 * 3_600_000L)
+        runCatching {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        }
+    }
+
+    private fun syncIntent(context: Context): PendingIntent? {
+        val intent = Intent(context, SyncReceiver::class.java).setAction(HoustonSyncService.ACTION_SYNC)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return runCatching { PendingIntent.getBroadcast(context, REQ_SYNC, intent, flags) }.getOrNull()
+    }
+
     private fun briefingIntent(context: Context): PendingIntent? {
         val intent = Intent(context, BriefingReceiver::class.java).setAction("com.astroboii47.commander.MORNING_BRIEFING")
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE

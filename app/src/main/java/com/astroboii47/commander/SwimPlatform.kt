@@ -35,7 +35,30 @@ data class SwimmerProfile(
     val preferredCourse: SwimCourse = SwimCourse.SCY,
     val meetMobileSwimmerId: String = "", // verified unique-swimmer id only
     val strokes: List<String> = emptyList(),
+    val links: List<LinkedSwimmer> = emptyList(), // extra verified identities
 )
+
+/** One verified Meet Mobile identity attached to the same swimmer. */
+data class LinkedSwimmer(
+    val uniqueId: String,
+    val label: String, // e.g. "Jane Doe · Nitro Swim"
+    val meetName: String = "",
+)
+
+/**
+ * Identity matching for imports: a result belongs to this swimmer when its
+ * entry label matches the profile name or any linked identity. Explicit
+ * confirmation in the UI is still required before importing.
+ */
+fun entryMatchesIdentity(label: String, profileName: String, links: List<LinkedSwimmer>): Boolean {
+    val t = label.trim()
+    if (t.isEmpty()) return false
+    val cands = (listOf(profileName) + links.map { it.label } + links.map { it.uniqueId })
+        .map { it.trim() }.filter { it.length >= 2 }
+    return cands.any { c ->
+        t.contains(c, ignoreCase = true) || c.contains(t, ignoreCase = true)
+    }
+}
 
 // ---------- Goals ----------
 
