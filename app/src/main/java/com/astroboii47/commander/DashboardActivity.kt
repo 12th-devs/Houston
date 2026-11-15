@@ -6,11 +6,9 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,20 +21,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Book
-import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.School
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Nightlight
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Waves
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -48,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +54,24 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.astroboii47.commander.agent.AgentEngine
+import com.astroboii47.commander.agent.AgentInput
+import com.astroboii47.commander.secondbrain.context.BrainContext
+import com.astroboii47.commander.secondbrain.context.BrainSnapshot
+import com.astroboii47.commander.secondbrain.db.AgentRun
+import com.astroboii47.commander.secondbrain.di.BrainGraph
+import com.astroboii47.commander.secondbrain.di.BrainPrefs
+import com.astroboii47.commander.secondbrain.ui.AskScreen
+import com.astroboii47.commander.secondbrain.ui.BrainHome
+import com.astroboii47.commander.secondbrain.ui.MemoryScreen
+import com.astroboii47.commander.secondbrain.ui.PlanScreen
+import com.astroboii47.commander.secondbrain.ui.SbBottomBar
+import com.astroboii47.commander.secondbrain.ui.SbDestination
+import com.astroboii47.commander.secondbrain.work.BrainWorker
 import java.time.LocalDate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -103,7 +115,7 @@ private fun DashboardTheme(content: @Composable () -> Unit) {
     }
 }
 
-private enum class DashTab { HOME, CALENDAR, SCHOOL, SWIM, MEMORIES }
+internal enum class DashTab { HOME, CALENDAR, SCHOOL, SWIM, MEMORIES }
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -111,7 +123,12 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val today = remember { LocalDate.now() }
-    var tab by remember { mutableStateOf(DashTab.HOME) }
+    val navController = rememberNavController()
+    val backStack by navController.currentBackStackEntryAsState()
+    val currentRoute = backStack?.destination?.route ?: "home"
+    fun nav(route: String) {
+        navController.navigate(route) { launchSingleTop = true }
+    }
 
     // Shared calendar navigation state (home agenda can jump into the Calendar tab).
     var calDay by remember { mutableStateOf(LocalDate.now()) }
@@ -167,8 +184,24 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
     var autoRuns by remember { mutableStateOf(listOf<AutomationRun>()) }
     var notifyPrefs by remember { mutableStateOf(mapOf<String, Boolean>()) }
     var syncOn by remember { mutableStateOf(true) }
-    var syncHours by remember { mutableStateOf(6L) }
+    var syncHours by remember { mutableLongStateOf(6L) }
     var lastBgSync by remember { mutableStateOf<String?>(null) }
+    var quietStart by remember { mutableIntStateOf(1380) }
+    var quietEnd by remember { mutableIntStateOf(420) }
+    var agentNotifyLevel by remember { mutableStateOf("important") }
+    var proactiveOn by remember { mutableStateOf(true) }
+    var agentRuns by remember { mutableStateOf(listOf<AgentRun>()) }
+
+    fun reloadBrainPrefs() {
+        scope.launch {
+            val (s, e) = BrainPrefs.quietWindow(context)
+            quietStart = s
+            quietEnd = e
+            agentNotifyLevel = BrainPrefs.notifyLevel(context)
+            proactiveOn = BrainPrefs.proactive(context)
+            agentRuns = withContext(Dispatchers.IO) { BrainGraph.db(context).runs().recent(10) }
+        }
+    }
 
     fun reloadSwimPlatform() {
         swimProfile = SwimPlatformStore.loadProfile(context)
@@ -252,7 +285,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                 ),
             ),
         )
-        tab = DashTab.MEMORIES
+        nav("captures")
         Toast.makeText(context, "Saved to Memories", Toast.LENGTH_SHORT).show()
         intent.action = null
     }
@@ -344,19 +377,63 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
         }
     }
 
+    // Second-brain state (new IA reads the same stores).
+    var brainSnapshot by remember { mutableStateOf<BrainSnapshot?>(null) }
+    var modelBriefing by remember { mutableStateOf<String?>(null) }
+    var briefingBusy by remember { mutableStateOf(false) }
+    var askPrefill by remember { mutableStateOf("") }
+    var askNonce by remember { mutableIntStateOf(0) }
+    val agent = remember { BrainGraph.agent(context) }
+
+    fun refreshBrain(query: String? = null) {
+        scope.launch {
+            brainSnapshot = withContext(Dispatchers.IO) { BrainContext.snapshot(context, query) }
+        }
+    }
+
+    fun deterministicBrief(): String? {
+        val s = brainSnapshot ?: return null
+        return agent.deterministicAnswer("brief me on today", s)
+    }
+
+    fun refreshModelBriefing() {
+        val s = brainSnapshot ?: return
+        scope.launch {
+            briefingBusy = true
+            try {
+                val out = withContext(Dispatchers.IO) {
+                    agent.run(
+                        context,
+                        AgentInput(text = "Give me a concise morning-style briefing for today.", trigger = "briefing"),
+                        s,
+                    )
+                }
+                modelBriefing = out.answer
+            } finally {
+                briefingBusy = false
+            }
+        }
+    }
+
     fun navigateToTarget(target: String) {
-        when {
-            target.startsWith("school:") -> {
-                openCourseId = target.removePrefix("school:")
-                tab = DashTab.SCHOOL
+        val (dest, payload) = SbDestination.parseTarget(target)
+        when (dest) {
+            SbDestination.SCHOOL -> {
+                if (!payload.isNullOrBlank()) openCourseId = payload
+                nav("school")
             }
-            target.startsWith("swim:") -> tab = DashTab.SWIM
-            target.startsWith("memory:") -> {
-                val uuid = target.removePrefix("memory:")
-                openMemory = MemoryStore.loadMemories(context, includeTrashed = true).firstOrNull { it.uuid == uuid }
-                tab = DashTab.MEMORIES
+            SbDestination.SWIM -> nav("swim")
+            SbDestination.CAPTURES -> {
+                if (!payload.isNullOrBlank()) {
+                    openMemory = MemoryStore.loadMemories(context, includeTrashed = true).firstOrNull { it.uuid == payload }
+                }
+                nav("captures")
             }
-            else -> tab = DashTab.HOME
+            SbDestination.CALENDAR -> {
+                payload?.let { runCatching { LocalDate.parse(it) }.getOrNull()?.let { d -> calDay = d } }
+                nav("calendar")
+            }
+            else -> nav(SbDestination.routeOf(dest))
         }
     }
 
@@ -368,9 +445,20 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
         reloadSwimPlatform()
         reloadMemories()
         reloadIntelligence()
+        refreshBrain()
+        reloadBrainPrefs()
         InsightStore.pruneExpired(context)
         runCatching { HoustonScheduler.reschedule(context) }
         runCatching { HoustonScheduler.rescheduleSync(context) }
+        scope.launch {
+            // The proactive worker only runs with explicit opt-in; the toggle
+            // lives next to the other background controls in settings.
+            if (runCatching { BrainPrefs.proactive(context) }.getOrDefault(true)) {
+                runCatching { BrainWorker.schedule(context) }
+            } else {
+                runCatching { BrainWorker.cancel(context) }
+            }
+        }
         // Evaluate automation rules on start; record runs (no repeat alerts).
         val fired = AutomationEngine.evaluate(autoRules, emptyList(), insights)
         if (fired.isNotEmpty()) {
@@ -382,6 +470,12 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
         }
         handleSharedIntent(launchIntent)
         launchIntent?.getStringExtra("insight_target")?.let { navigateToTarget(it) }
+    }
+
+    // Keep the grounded snapshot and agent history fresh across navigation.
+    LaunchedEffect(currentRoute) {
+        refreshBrain()
+        if (currentRoute == "school") reloadBrainPrefs()
     }
 
     // Terms + GPA + movers for the selected term.
@@ -482,6 +576,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
     }
 
     val homeScroll = rememberScrollState()
+    val planScroll = rememberScrollState()
     val calScroll = rememberScrollState()
     val schoolScroll = rememberScrollState()
     val swimScroll = rememberScrollState()
@@ -490,16 +585,14 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
-            AnimatedContent(
-                    targetState = tab,
-                    transitionSpec = {
-                        fadeIn(animationSpec = tween(180)) togetherWith
-                            fadeOut(animationSpec = tween(180))
-                    },
-                    label = "dash-tab",
-                ) { page ->
-                when (page) {
-                    DashTab.HOME -> {
+            NavHost(
+                    navController = navController,
+                    startDestination = "home",
+                    modifier = Modifier.fillMaxSize(),
+                    enterTransition = { fadeIn() },
+                    exitTransition = { fadeOut() },
+                ) {
+                    composable("home") {
                         PullToRefreshBox(
                             isRefreshing = refreshing,
                             onRefresh = {
@@ -509,81 +602,58 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             modifier = Modifier.fillMaxSize(),
                         ) {
                         Column(
-                            Modifier.fillMaxSize().verticalScroll(homeScroll),
+                            Modifier.fillMaxSize().verticalScroll(homeScroll)
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 108.dp),
                         ) {
-                            // Home-only header: full-bleed waves behind the status
-                            // bar, scrolling away with the content so it never
-                            // covers anything.
-                            Box(Modifier.fillMaxWidth()) {
-                                HeaderWaves(Modifier.fillMaxWidth().height(190.dp))
-                                Row(
-                                    Modifier.fillMaxWidth()
-                                        .statusBarsPadding()
-                                        .padding(horizontal = 18.dp)
-                                        .padding(top = 10.dp, bottom = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    WaveformMark()
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text("Houston", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-                                        Text(
-                                            today.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMMM d")),
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                    IconButton(onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) }) {
-                                        Icon(Icons.Outlined.Settings, "Houston Settings")
-                                    }
+                            Row(
+                                Modifier.fillMaxWidth().statusBarsPadding(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                WaveformMark()
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    "Houston",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) }) {
+                                    Icon(Icons.Outlined.Settings, "Houston Settings")
                                 }
                             }
-                            Column(Modifier.padding(horizontal = 18.dp).padding(bottom = 108.dp)) {
-                            HomePage(
-                                feeds = feeds,
-                                feedsVersion = feedsVersion,
-                                psCourses = psCourses,
-                                selectedTerm = selectedTerm,
-                                gpa = gpa,
-                                gpaDelta = gpaDelta,
-                                letterCounts = letterCounts,
-                                movers = movers,
-                                moverDate = ::moverDate,
-                                swim = swim,
-                                swimExpanded = swimExpanded,
-                                onToggleSwimExpanded = { swimExpanded = !swimExpanded },
-                                onSaveSwimTargets = { name, s, b, g ->
-                                    SwimStore.saveTargets(context, name, s, b, g)
-                                    swim = SwimStore.load(context)
+                            Spacer(Modifier.height(12.dp))
+                            val brief = modelBriefing ?: deterministicBrief()
+                            BrainHome(
+                                snapshot = brainSnapshot,
+                                briefing = brief,
+                                briefingLoading = briefingBusy && modelBriefing == null && brief == null,
+                                onRegenerateBriefing = { refreshModelBriefing() },
+                                onOpenRadar = { navigateToTarget(it.ifBlank { "home" }) },
+                                onOpenPlan = { nav("plan") },
+                                onAsk = { t ->
+                                    askPrefill = t
+                                    askNonce++
+                                    nav("ask")
                                 },
-                                onAddSwimEntry = { date, title, detail ->
-                                    SwimStore.addEntry(context, date, title, detail)
-                                    swim = SwimStore.load(context)
-                                },
-                                onDeleteSwimEntry = {
-                                    SwimStore.removeEntry(context, it)
-                                    swim = SwimStore.load(context)
-                                },
-                                onOpenCalendar = { day ->
-                                    calDay = day
-                                    tab = DashTab.CALENDAR
-                                },
-                                onOpenSchool = { tab = DashTab.SCHOOL },
-                                briefing = briefing,
-                                insights = insights.filter { !it.acked }.take(5),
-                                weekly = weekly,
-                                lastSyncLabel = lastSyncLabel,
-                                onRefreshAll = {
-                                    syncAllFeeds()
-                                    doPsRefresh(null, null)
-                                },
-                                onAckInsight = { id ->
-                                    InsightStore.ack(context, id)
-                                    reloadIntelligence()
-                                },
-                                onOpenInsight = { navigateToTarget(it.actionTarget ?: it.id) },
-                                onReflect = { showReflect = true },
                             )
+                            Spacer(Modifier.height(12.dp))
+                            SectionCard(
+                                icon = Icons.Outlined.Nightlight,
+                                title = "Evening reflection",
+                                viewAllLabel = "Reflect",
+                                onViewAll = { showReflect = true },
+                            ) {
+                                Text(
+                                    "A line or two about today — saved as a memory, never a nag.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (weekly.lines.isNotEmpty()) {
+                                Spacer(Modifier.height(12.dp))
+                                WeeklyReviewCard(week = weekly)
+                            }
                             if (showReflect) {
                                 EveningReflectionDialog(
                                     onSave = { text, voice ->
@@ -607,9 +677,58 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             Spacer(Modifier.height(8.dp))
                             }
                         }
+                    }
+                    composable("plan") {
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(planScroll)
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 108.dp),
+                        ) {
+                            PlanScreen(
+                                snapshot = brainSnapshot,
+                                onOpenCalendar = { nav("calendar") },
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            SectionCard(icon = Icons.Outlined.Apps, title = "Domains") {
+                                Text(
+                                    "School, swimming, and calendar detail live here — same screens, one tap away.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { nav("school") }, modifier = Modifier.weight(1f)) { Text("School") }
+                                    OutlinedButton(onClick = { nav("swim") }, modifier = Modifier.weight(1f)) { Text("Swim") }
+                                    OutlinedButton(onClick = { nav("calendar") }, modifier = Modifier.weight(1f)) { Text("Calendar") }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
                         }
                     }
-                    DashTab.CALENDAR -> {
+                    composable("memory") {
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(memScroll)
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 108.dp),
+                        ) {
+                            MemoryScreen(onOpenCaptures = { nav("captures") })
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                    composable("ask") {
+                        Column(
+                            Modifier.fillMaxSize()
+                                .padding(horizontal = 18.dp)
+                                .padding(top = 12.dp, bottom = 108.dp),
+                        ) {
+                    AskScreen(
+                        prefill = askPrefill,
+                        prefillNonce = askNonce,
+                        onPrefillConsumed = { askPrefill = "" },
+                    )
+                        }
+                    }
+                    composable("calendar") {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(calScroll)
                                 .padding(horizontal = 18.dp)
@@ -628,7 +747,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             Spacer(Modifier.height(8.dp))
                         }
                     }
-                    DashTab.SCHOOL -> {
+                    composable("school") {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(schoolScroll)
                                 .padding(horizontal = 18.dp)
@@ -700,6 +819,17 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                                 syncOn = syncOn,
                                 syncHours = syncHours,
                                 lastSync = lastBgSync,
+                                quietStart = quietStart,
+                                quietEnd = quietEnd,
+                                notifyLevel = agentNotifyLevel,
+                                proactiveOn = proactiveOn,
+                                onToggleProactive = { on ->
+                                    scope.launch {
+                                        BrainPrefs.setProactive(context, on)
+                                        proactiveOn = on
+                                        if (on) BrainWorker.schedule(context) else BrainWorker.cancel(context)
+                                    }
+                                },
                                 onToggleBriefing = { on ->
                                     val updated = autoRules.map { if (it.id == "auto-morning-briefing") it.copy(enabled = on) else it }
                                     AutomationEngine.saveRules(context, updated)
@@ -716,6 +846,19 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                                     syncHours = h
                                     HoustonScheduler.rescheduleSync(context)
                                 },
+                                onQuietPreset = { s, e ->
+                                    scope.launch {
+                                        BrainPrefs.setQuietWindow(context, s, e)
+                                        quietStart = s
+                                        quietEnd = e
+                                    }
+                                },
+                                onNotifyLevel = { level ->
+                                    scope.launch {
+                                        BrainPrefs.setNotifyLevel(context, level)
+                                        agentNotifyLevel = level
+                                    }
+                                },
                                 onSyncNow = {
                                     HoustonSyncService.start(context)
                                     Toast.makeText(context, "Background sync started", Toast.LENGTH_SHORT).show()
@@ -724,6 +867,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             AutomationsCard(
                                 rules = autoRules,
                                 runs = autoRuns,
+                                agentRuns = agentRuns,
                                 notifyPrefs = notifyPrefs,
                                 onToggleRule = { id, on ->
                                     val updated = autoRules.map { if (it.id == id) it.copy(enabled = on) else it }
@@ -743,7 +887,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             Spacer(Modifier.height(8.dp))
                         }
                     }
-                    DashTab.SWIM -> {
+                    composable("swim") {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(swimScroll)
                                 .padding(horizontal = 18.dp)
@@ -874,7 +1018,7 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                             Spacer(Modifier.height(8.dp))
                         }
                     }
-                    DashTab.MEMORIES -> {
+                    composable("captures") {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(memScroll)
                                 .padding(horizontal = 18.dp)
@@ -951,7 +1095,6 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
                         }
                     }
                 }
-                }
                 // Full-screen image viewer overlay (above tab content, below nav bar).
                 if (viewerFile != null) {
                     Box(Modifier.matchParentSize()) {
@@ -961,54 +1104,15 @@ private fun DashboardScreen(launchIntent: Intent? = null) {
             }
 
             // Floating icon-only bar overlaid on content: page content scrolls
-            // behind it (each tab leaves bottom clearance), the bar itself is
-            // translucent so the content shows through at the edges.
-            Box(
-                Modifier.align(androidx.compose.ui.Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 18.dp)
-                    .padding(top = 8.dp, bottom = 12.dp),
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(28.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.88f),
-                    tonalElevation = 3.dp,
-                    shadowElevation = 6.dp,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    NavigationBar(
-                        containerColor = Color.Transparent,
-                        tonalElevation = 0.dp,
-                    ) {
-                NavigationBarItem(
-                    selected = tab == DashTab.HOME,
-                    onClick = { tab = DashTab.HOME },
-                    icon = { Icon(Icons.Outlined.Home, "Home") },
-                )
-                NavigationBarItem(
-                    selected = tab == DashTab.CALENDAR,
-                    onClick = { tab = DashTab.CALENDAR },
-                    icon = { Icon(Icons.Outlined.CalendarMonth, "Calendar") },
-                )
-                NavigationBarItem(
-                    selected = tab == DashTab.SCHOOL,
-                    onClick = { tab = DashTab.SCHOOL },
-                    icon = { Icon(Icons.Outlined.School, "School") },
-                )
-                NavigationBarItem(
-                    selected = tab == DashTab.SWIM,
-                    onClick = { tab = DashTab.SWIM },
-                    icon = { Icon(Icons.Outlined.Waves, "Swim") },
-                )
-                NavigationBarItem(
-                    selected = tab == DashTab.MEMORIES,
-                    onClick = { tab = DashTab.MEMORIES },
-                    icon = { Icon(Icons.Outlined.Book, "Memories") },
-                )
-                    }
-                }
-            }
+            // behind it (each destination leaves bottom clearance), the bar
+            // itself is translucent so the content shows through at the edges.
+            val selectedSb = SbDestination.entries.firstOrNull { SbDestination.routeOf(it) == currentRoute }
+                ?: SbDestination.HOME
+            SbBottomBar(
+                selected = if (selectedSb.primary) selectedSb else SbDestination.HOME,
+                onSelect = { nav(SbDestination.routeOf(it)) },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
     }
 }

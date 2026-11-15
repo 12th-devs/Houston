@@ -34,7 +34,7 @@ object AiApi {
                     parsed.id,
                     JSONObject(parsed.args),
                 )
-                val message = AskMessage("tool", "Tool result for ${parsed.id}: ${result.text}", result.imagePath)
+                val message = AskMessage("tool", untrustedToolBlock(parsed.id, result.text), result.imagePath)
                 conversation.add(message)
                 if (result.imagePath != null) attachments.add(message)
             }

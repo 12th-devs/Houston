@@ -1,5 +1,33 @@
 # Changelog
 
+## 3.2.0-alpha.1 (pre-release)
+
+Second-brain foundation: the app is now organized as Home / Plan / Memory / Ask, backed by a persistent memory store, a grounded agent runtime, and a proactive background pass. All prior screens keep working as secondary routes.
+
+### Added
+
+- Four-destination IA (Home / Plan / Memory / Ask) on Navigation-Compose; School, Swim, Calendar, and Captures preserved as secondary routes with full deep-link mapping and a labeled bottom bar.
+- Room database `secondbrain.db`: agent facts with verification states (confirmed/imported/inferred/temporary/superseded), links, chat threads/messages, agent runs, plan blocks — plus an FTS4 full-text index with sanitized queries and a substring fallback.
+- Unified `BrainSnapshot` context grounding every agent turn; retrieved content tagged UNTRUSTED DATA; tool output sanitized and truncated everywhere it enters a prompt.
+- Persistent memory engine: dedup, heuristic contradiction flags, consolidation, confirm/edit/supersede/delete, and a review queue for confident inferences.
+- Planner: conflict detection, free-block math, study recommendations with rationales and real assignment names, overload scoring; accepted blocks are never re-suggested.
+- Agent engine: L1/L2/L3 permissions over the existing action tiers, bounded steps (configurable per request), cancellation, run history with triggers, usage accounting only for real model calls; SSE token streaming on Gemini with progressive rendering elsewhere.
+- Ask: streaming conversation with history, tool-step progress, approval cards with correct permission levels, cancel, source references, usage readout.
+- Plan: Today timeline, Upcoming groups, Calendar view, approval-gated study suggestions, Domains shortcuts.
+- Memory: facts/goals/experiences/projects with verification labels, semantic + FTS recall, memory-health consolidation, one-tap confirm for ready inferences.
+- Background: 6-hour WorkManager proactive pass (conflicts, overload, due-tomorrow) with a master on/off switch, quiet-hours presets, and notification level (all/important/none); agent activity history in settings.
+
+### Fixed
+
+- Home input and voice handoffs no longer drop the question: Ask auto-sends a fresh prefill when idle.
+- Removed the legacy auto-confirm path: consequential tools in every entry point now surface an approval card instead of executing.
+- Home no longer duplicates the agenda: "Today at a glance" removed in favor of Up Next plus the Plan timeline.
+
+### Notes
+
+- New deps: Room 2.8.5 (KSP), WorkManager 2.10.0, Navigation-Compose 2.8.5, lifecycle-viewmodel-compose, DataStore Preferences. No DI framework (manual BrainGraph, per project convention).
+- Legacy stores untouched; HomePage retired from navigation but retained. Debug builds: 186+ unit tests green.
+
 ## 3.1.0-alpha.1 (pre-release)
 
 ### Added
@@ -218,3 +246,4 @@
 - Prepared the permanent `com.astroboii47.commander` application identity.
 
 Houston Home is present internally but hidden from the alpha launcher build while it remains experimental.
+

@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    alias(libs.plugins.ksp)
 }
 
 val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
@@ -31,8 +32,8 @@ android {
         applicationId = "com.astroboii47.commander"
         minSdk = 29
         targetSdk = 36
-        versionCode = 16
-        versionName = "3.1.0-alpha.1"
+        versionCode = 17
+        versionName = "3.2.0-alpha.1"
         // Keep only English strings from libraries; translations add bulk for little benefit in alpha.
         resourceConfigurations += "en"
     }
@@ -95,6 +96,14 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
+    implementation(libs.navigation.compose)
+    implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+    implementation(libs.work.runtime.ktx)
+    implementation(libs.datastore.preferences)
     implementation(libs.mlkit.genai.prompt)
     implementation(libs.markwon.core)
     implementation(libs.litertlm)

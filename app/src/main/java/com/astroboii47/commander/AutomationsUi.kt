@@ -76,12 +76,30 @@ fun BackgroundCard(
     syncOn: Boolean,
     syncHours: Long,
     lastSync: String?,
+    quietStart: Int,
+    quietEnd: Int,
+    notifyLevel: String,
+    proactiveOn: Boolean,
+    onToggleProactive: (Boolean) -> Unit,
     onToggleBriefing: (Boolean) -> Unit,
     onToggleSync: (Boolean) -> Unit,
     onInterval: (Long) -> Unit,
+    onQuietPreset: (Int, Int) -> Unit,
+    onNotifyLevel: (String) -> Unit,
     onSyncNow: () -> Unit,
 ) {
     SectionCard(icon = Icons.Outlined.Sync, title = "Background work") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Proactive intelligence", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Background check-ins, conflict and overload alerts. Off means fully silent.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = proactiveOn, onCheckedChange = onToggleProactive)
+        }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Morning briefing", style = MaterialTheme.typography.bodyMedium)
@@ -119,6 +137,18 @@ fun BackgroundCard(
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
+        Text("Quiet hours", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = quietStart == 0 && quietEnd == 0, onClick = { onQuietPreset(0, 0) }, label = { Text("Off") })
+            FilterChip(selected = quietStart == 1380 && quietEnd == 420, onClick = { onQuietPreset(1380, 420) }, label = { Text("22:00–07:00") })
+            FilterChip(selected = quietStart == 1380 && quietEnd == 360, onClick = { onQuietPreset(1380, 360) }, label = { Text("22:00–06:00") })
+        }
+        Text("Notification level", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("all" to "All", "important" to "Important", "none" to "None").forEach { (v, label) ->
+                FilterChip(selected = notifyLevel == v, onClick = { onNotifyLevel(v) }, label = { Text(label) })
+            }
+        }
         Button(onClick = onSyncNow, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
             Icon(Icons.Outlined.Sync, null)
             Spacer(Modifier.width(8.dp))
@@ -132,6 +162,7 @@ fun BackgroundCard(
 fun AutomationsCard(
     rules: List<AutomationRule>,
     runs: List<AutomationRun>,
+    agentRuns: List<com.astroboii47.commander.secondbrain.db.AgentRun> = emptyList(),
     notifyPrefs: Map<String, Boolean>,
     onToggleRule: (String, Boolean) -> Unit,
     onToggleChannel: (String, Boolean) -> Unit,
@@ -186,5 +217,31 @@ fun AutomationsCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+    if (agentRuns.isNotEmpty()) {
+        Spacer(Modifier.height(12.dp))
+        SectionCard(icon = Icons.Outlined.History, title = "Agent activity") {
+            agentRuns.take(8).forEach { r ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Text(
+                        "${r.trigger} · ${r.status}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    )
+                    if (r.summary.isNotBlank()) {
+                        Text(
+                            r.summary.take(140),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Text(
+                "What the agent did and why — steps, tools, and outcomes are recorded per run.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

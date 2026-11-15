@@ -355,7 +355,9 @@ object AssistantTools {
         history: List<AskMessage>,
         assistContext: AssistantContext? = null,
         confirmedKeys: Set<String> = emptySet(),
+        maxSteps: Int = MAX_STEPS,
     ): RunResult = withContext(Dispatchers.IO) {
+        val stepCap = maxSteps.coerceIn(1, MAX_STEPS)
         ActionRegistry.registerDefaults()
         val provider = AiSettings.provider(context)
         AssistantLog.i(
@@ -373,15 +375,15 @@ object AssistantTools {
         // 1. Fast deterministic path (works even when the model has no tools).
         val deterministic = deterministicPlan(prompt, assistContext?.sharedText)
         if (deterministic.isNotEmpty()) {
-            return@withContext executePlan(context, deterministic, confirmedKeys, provider.label, usedNativeTools = false)
+            return@withContext executePlan(context, deterministic, confirmedKeys, provider.label, usedNativeTools = false, maxSteps = stepCap)
         }
         // 2. Native tools where supported.
         if (supportsNativeTools(provider)) {
-            val native = runNativeLoop(context, requestText, history, confirmedKeys, provider)
+            val native = runNativeLoop(context, requestText, history, confirmedKeys, provider, stepCap)
             if (native != null) return@withContext native
         }
         // 3. Fallback: model JSON tool calls.
-        runFallbackLoop(context, requestText, history, confirmedKeys, provider)
+        runFallbackLoop(context, requestText, history, confirmedKeys, provider, stepCap)
     }
 
     private suspend fun executePlan(
@@ -390,10 +392,11 @@ object AssistantTools {
         confirmedKeys: Set<String>,
         providerLabel: String,
         usedNativeTools: Boolean,
+        maxSteps: Int = MAX_STEPS,
     ): RunResult {
         val steps = ArrayList<ExecutedStep>()
         val pending = ArrayList<PendingConfirmation>()
-        for (planned in plan.take(MAX_STEPS)) {
+        for (planned in plan.take(maxSteps.coerceIn(1, MAX_STEPS))) {
             val action = ActionRegistry.find(planned.id)
                 ?: return RunResult(
                     "I couldn't run ${planned.id}: unknown action.",
@@ -440,12 +443,13 @@ object AssistantTools {
         history: List<AskMessage>,
         confirmedKeys: Set<String>,
         provider: AiProvider,
+        maxSteps: Int = MAX_STEPS,
     ): RunResult? {
         return try {
             val conversation = (history + AskMessage("user", requestText)).toMutableList()
             val steps = ArrayList<ExecutedStep>()
             val pending = ArrayList<PendingConfirmation>()
-            repeat(MAX_STEPS) {
+            repeat(maxSteps.coerceIn(1, MAX_STEPS)) {
                 val step = AiApi.chatWithNativeToolsOnce(context, conversation, org.json.JSONArray(openAiToolsPayload()), provider)
                     .getOrNull() ?: return null
                 when (step) {
@@ -458,7 +462,7 @@ object AssistantTools {
                                 return RunResult(step.text, steps, pending, true, provider.label)
                             }
                             val plan = parsed.map { PlannedCall(it.id, it.args) }
-                            val outcome = executePlan(context, plan, confirmedKeys, provider.label, true)
+                            val outcome = executePlan(context, plan, confirmedKeys, provider.label, true, maxSteps)
                             if (outcome.steps.isNotEmpty() || outcome.pending.isNotEmpty()) return outcome
                             return RunResult(step.text, steps, pending, true, provider.label)
                         }
@@ -471,21 +475,21 @@ object AssistantTools {
                     is AiApi.NativeStep.ToolCalls -> {
                         if (step.calls.isEmpty()) return null
                         var progressed = false
-                        for (call in step.calls.take(MAX_STEPS - steps.size - pending.size).ifEmpty { return null }) {
+                        for (call in step.calls.take(maxSteps.coerceIn(1, MAX_STEPS) - steps.size - pending.size).ifEmpty { return null }) {
                             val action = ActionRegistry.find(call.name)
-                            if (action == null) {
-                                conversation.add(
-                                    AskMessage("tool", "Tool result for ${call.name}: unknown action ${call.name}"),
-                                )
-                                progressed = true
-                                continue
-                            }
+                                if (action == null) {
+                                    conversation.add(
+                                        AskMessage("tool", untrustedToolBlock(call.name, "unknown action ${call.name}")),
+                                    )
+                                    progressed = true
+                                    continue
+                                }
                             val args = call.arguments.entries.associate { it.key to it.value }
                             when (val outcome = ActionExecutor.run(context, action, args, confirmedKeys)) {
                                 is ExecutorOutcome.Executed -> {
                                     steps.add(ExecutedStep(action.id, args, outcome.result))
                                     conversation.add(
-                                        AskMessage("tool", "Tool result for ${action.id}: ${outcome.result.message}"),
+                                        AskMessage("tool", untrustedToolBlock(action.id, outcome.result.message)),
                                     )
                                     progressed = true
                                 }
@@ -502,20 +506,20 @@ object AssistantTools {
                                     conversation.add(
                                         AskMessage(
                                             "tool",
-                                            "Tool result for ${action.id}: permission needed: ${outcome.missing.joinToString()}",
+                                            untrustedToolBlock(action.id, "permission needed: ${outcome.missing.joinToString()}"),
                                         ),
                                     )
                                     progressed = true
                                 }
                                 is ExecutorOutcome.InvalidArgs -> {
                                     conversation.add(
-                                        AskMessage("tool", "Tool result for ${action.id}: invalid args: ${outcome.reason}"),
+                                        AskMessage("tool", untrustedToolBlock(action.id, "invalid args: ${outcome.reason}")),
                                     )
                                     progressed = true
                                 }
                                 is ExecutorOutcome.Unavailable -> {
                                     conversation.add(
-                                        AskMessage("tool", "Tool result for ${action.id}: ${outcome.reason}"),
+                                        AskMessage("tool", untrustedToolBlock(action.id, outcome.reason)),
                                     )
                                     progressed = true
                                 }
@@ -550,12 +554,13 @@ object AssistantTools {
         history: List<AskMessage>,
         confirmedKeys: Set<String>,
         provider: AiProvider,
+        maxSteps: Int = MAX_STEPS,
     ): RunResult {
         val systemPrompt = AiSettings.systemPrompt(context) + "\n\n" + fallbackInstructions()
         val conversation = (history + AskMessage("user", requestText)).toMutableList()
         val steps = ArrayList<ExecutedStep>()
         val pending = ArrayList<PendingConfirmation>()
-        for (round in 0 until MAX_STEPS) {
+        for (round in 0 until maxSteps.coerceIn(1, MAX_STEPS)) {
             val answer = AiApi.generateText(context, conversation, systemPrompt).getOrElse {
                 return RunResult(it.message ?: "${provider.label} request failed", steps, pending, false, provider.label)
             }
@@ -571,7 +576,7 @@ object AssistantTools {
                     is ExecutorOutcome.Executed -> {
                         steps.add(ExecutedStep(action.id, call.args, outcome.result))
                         conversation.add(AskMessage("assistant", answer))
-                        conversation.add(AskMessage("tool", "Tool result for ${action.id}: ${outcome.result.message}"))
+                        conversation.add(AskMessage("tool", untrustedToolBlock(action.id, outcome.result.message)))
                         progressed = true
                     }
                     is ExecutorOutcome.NeedsConfirmation -> pending.add(
@@ -586,18 +591,18 @@ object AssistantTools {
                             AskMessage("assistant", answer),
                         )
                         conversation.add(
-                            AskMessage("tool", "Tool result for ${action.id}: permission needed. Ask the user to grant it in Houston settings."),
+                            AskMessage("tool", untrustedToolBlock(action.id, "permission needed. Ask the user to grant it in Houston settings.")),
                         )
                         progressed = true
                     }
                     is ExecutorOutcome.InvalidArgs -> {
                         conversation.add(AskMessage("assistant", answer))
-                        conversation.add(AskMessage("tool", "Tool result for ${action.id}: invalid args: ${outcome.reason}"))
+                        conversation.add(AskMessage("tool", untrustedToolBlock(action.id, "invalid args: ${outcome.reason}")))
                         progressed = true
                     }
                     is ExecutorOutcome.Unavailable -> {
                         conversation.add(AskMessage("assistant", answer))
-                        conversation.add(AskMessage("tool", "Tool result for ${action.id}: ${outcome.reason}"))
+                        conversation.add(AskMessage("tool", untrustedToolBlock(action.id, outcome.reason)))
                         progressed = true
                     }
                 }

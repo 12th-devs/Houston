@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PowerSchool portal session cookies must never leave the device:
+     they authenticate as the user and cannot be re-encrypted on restore.
+     Everything else (grades cache, memories, swim, insights) stays backed up. -->
+<full-backup-content>
+    <exclude domain="file" path="powerschool/session.json" />
+    <exclude domain="file" path="powerschool/session.json.tmp" />
+</full-backup-content>

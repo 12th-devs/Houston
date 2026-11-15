@@ -64,6 +64,7 @@
     <application
         android:name=".MinimalCommandApplication"
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@drawable/ic_commander_bar"
         android:label="Houston"
         android:supportsRtl="true"

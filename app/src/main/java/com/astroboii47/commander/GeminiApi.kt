@@ -3,6 +3,9 @@ package com.astroboii47.commander
 import android.content.Context
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -27,6 +30,89 @@ object GeminiApi {
             return@runCatching request(key, model, history, systemPrompt).getOrThrow()
         }
         throw error
+    }
+
+    /**
+     * True token streaming via `streamGenerateContent?alt=sse`. Invokes
+     * [onChunk] per text delta; returns the full assembled text. Cancellation
+     * takes effect between chunks (SSE lines arrive continuously while the
+     * model is generating, so cancel latency is small in practice).
+     */
+    suspend fun streamGenerate(
+        context: Context,
+        history: List<AskMessage>,
+        systemPrompt: String = "",
+        onChunk: suspend (String) -> Unit,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val key = GeminiSettings.apiKey(context)
+            require(key.isNotBlank()) { "Add your Gemini API key in Command settings" }
+            val model = cachedModel ?: discoverModel(key).also { cachedModel = it }
+            val contents = JSONArray().apply {
+                history.forEach { message ->
+                    put(JSONObject().apply {
+                        put("role", if (message.role == "assistant") "model" else "user")
+                        put("parts", AiApi.geminiParts(message))
+                    })
+                }
+            }
+            val body = JSONObject().apply {
+                if (systemPrompt.isNotBlank()) put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt))))
+                put("contents", contents)
+                put("generationConfig", JSONObject().apply {
+                    put("temperature", 0.7)
+                    put("maxOutputTokens", 1024)
+                })
+            }.toString()
+            val connection = URL(
+                "https://generativelanguage.googleapis.com/v1beta/$model:streamGenerateContent?alt=sse",
+            ).openConnection() as HttpURLConnection
+            try {
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 60_000
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.setRequestProperty("x-goog-api-key", key)
+                connection.setRequestProperty("Accept", "text/event-stream")
+                connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    val raw = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    val apiMessage = runCatching {
+                        JSONObject(raw).getJSONObject("error").getString("message")
+                    }.getOrNull()
+                    error(apiMessage ?: "Gemini stream failed · $code")
+                }
+                val out = StringBuilder()
+                connection.inputStream.bufferedReader().useLines { lines ->
+                    for (line in lines) {
+                        ensureActive()
+                        val data = line.trim()
+                        if (!data.startsWith("data:")) continue
+                        val payload = data.removePrefix("data:").trim()
+                        if (payload == "[DONE]") break
+                        val delta = runCatching {
+                            val candidates = JSONObject(payload).optJSONArray("candidates") ?: return@runCatching ""
+                            val parts = candidates.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+                                ?: return@runCatching ""
+                            buildString {
+                                for (i in 0 until parts.length()) {
+                                    parts.optJSONObject(i)?.optString("text")?.let(::append)
+                                }
+                            }
+                        }.getOrDefault("")
+                        if (delta.isNotEmpty()) {
+                            out.append(delta)
+                            onChunk(delta)
+                        }
+                    }
+                }
+                out.toString().trim().ifBlank { error("Gemini returned an empty answer") }
+            } finally {
+                connection.disconnect()
+            }
+        }
     }
 
     private fun request(key: String, model: String, history: List<AskMessage>, systemPrompt: String): Result<String> = runCatching {
